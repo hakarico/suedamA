@@ -1,0 +1,56 @@
+/* Full-viewport layer that blocks background clicks, including on the Windows caption. */
+.suedama-image-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+/* Painted area below the Windows caption; like Modal, the caption stays unpainted. */
+.suedama-image-stage {
+  position: absolute;
+  inset: var(--dsh-frame-chrome-top, 0px) 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+/* Shared dimming mask below the preview and its controls. */
+.suedama-image-mask {
+  position: absolute;
+  inset: 0;
+  background: var(--dsw-alias-bg-mask-1,#000a);
+  backdrop-filter: var(--dsw-mask-blur,blur(6px));
+}
+
+.suedama-image-original {
+  position: relative;
+  max-width: min(100%, 1600px);
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--dsw-radius-lg,12px);
+  background: var(--dsw-specific-input-major,#272727);
+  border: 0;
+  box-shadow: var(--dsw-elevation-prominent);
+}
+
+.suedama-image-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0.5px solid var(--dsw-alias-border-l2-darkmode-thin,#ffffff30);
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-specific-input-major,#272727);
+  color: var(--dsw-alias-label-primary,#eee);
+  cursor: pointer;
+}
+
+.suedama-image-close:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 3px; }
+
+.suedama-image-backdrop{pointer-events:auto;color-scheme:dark}.suedama-image-close{padding:0}.suedama-image-close .icon{display:inline-flex;width:16px;height:16px}.suedama-image-close svg{width:100%;height:100%}

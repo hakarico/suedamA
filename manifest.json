@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "suedamA · DeepSeek Canvas",
+  "version": "1.0.0",
+  "description": "用白板整理 DeepSeek 对话、原生分支与引用。内容保存在本机。",
+  "minimum_chrome_version": "120",
+  "permissions": ["storage", "unlimitedStorage", "activeTab"],
+  "action": {"default_title": "打开 / 收起 suedamA 白板"},
+  "background": {"service_worker": "background.js"},
+  "content_scripts": [{
+    "matches": ["https://chat.deepseek.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_start"
+  }]
+}

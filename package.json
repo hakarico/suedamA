@@ -1,0 +1,36 @@
+{
+  "name": "suedama-deepseek-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "Local canvas, native conversation branches and annotations for chat.deepseek.com",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "audit:release": "node scripts/audit-release.mjs",
+    "check": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "dev": "node scripts/dev.mjs"
+  },
+  "dependencies": {
+    "@xyflow/react": "12.12.0",
+    "dompurify": "3.4.16",
+    "katex": "0.18.7",
+    "marked": "16.4.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "roughjs": "4.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "esbuild": "0.28.2",
+    "happy-dom": "20.11.6",
+    "typescript": "6.0.3"
+  }
+}
