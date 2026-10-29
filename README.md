@@ -97,4 +97,6 @@ Optional: `pnpm run benchmark` measures synthetic graph calculations; `pnpm dev`
 
 On Windows, run `./scripts/package.ps1` after building to create the ZIP and SHA256 checksum under `.scratch/release/`. Packaging uses an explicit file list and excludes source tests, debug output and browser data. Generated `dist/`, `.scratch/` and dependencies are excluded from Git.
 
-Third-party code and artwork retain their license notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+本项目采用 [MIT 许可证](LICENSE)。第三方代码与素材遵循各自的许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+This project is licensed under the [MIT License](LICENSE). Third-party code and artwork retain their own license notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -7,6 +7,7 @@ const common = { bundle: true, target: 'chrome120', minify: true, legalComments:
 await build({...common, entryPoints: ['src/content.tsx'], outfile: 'dist/content.js', format: 'iife', loader: {'.css': 'text', '.svg': 'text'}});
 await build({...common, entryPoints: ['src/background.ts'], outfile: 'dist/background.js', format: 'iife'});
 await copyFile('manifest.json', 'dist/manifest.json');
+await copyFile('LICENSE', 'dist/LICENSE');
 await copyFile('THIRD_PARTY_NOTICES.md', 'dist/THIRD_PARTY_NOTICES.md');
 await copyFile('README.md', 'dist/README.md');
 await mkdir('dist/licenses',{recursive:true});

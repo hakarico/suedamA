@@ -5,7 +5,7 @@ import {spawnSync} from 'node:child_process';
 
 const project=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const licenseNames=['@xyflow-react','dompurify','hachure-fill','katex','marked','path-data-parser','points-on-curve','points-on-path','react-dom','react','roughjs'];
-export const releaseFiles=['background.js','content.js','INSTALL.txt','manifest.json','README.md','THIRD_PARTY_NOTICES.md',...licenseNames.map(name=>`licenses/${name}.txt`)];
+export const releaseFiles=['background.js','content.js','INSTALL.txt','LICENSE','manifest.json','README.md','THIRD_PARTY_NOTICES.md',...licenseNames.map(name=>`licenses/${name}.txt`)];
 const dist=join(project,'dist'),findings=[];
 async function filesIn(directory){const files=[];for(const entry of await readdir(directory,{withFileTypes:true})){const path=join(directory,entry.name);if(entry.isSymbolicLink())throw new Error('Release must not contain symbolic links');if(entry.isDirectory())files.push(...await filesIn(path));else files.push(relative(dist,path).replaceAll('\\','/'));}return files;}
 const files=(await filesIn(dist)).sort();
@@ -23,7 +23,8 @@ for(const name of files){
   if(!releaseFiles.includes(name))continue;
   if((await stat(join(dist,name))).size>5_000_000){findings.push({file:name,rule:'unexpectedly large file'});continue;}
   const text=await readFile(join(dist,name),'utf8'),lower=text.toLowerCase();
-  if(personalMarkers.some(marker=>lower.includes(marker)))findings.push({file:name,rule:'local account identity'});
+  const identityText=name==='LICENSE'?lower.replace(/^copyright \(c\) [^\r\n]*$/m,''):lower;
+  if(personalMarkers.some(marker=>identityText.includes(marker)))findings.push({file:name,rule:'local account identity'});
   for(const [rule,pattern]of patterns)if(pattern.test(text))findings.push({file:name,rule});
 }
 const manifest=JSON.parse(await readFile(join(dist,'manifest.json'),'utf8')),pkg=JSON.parse(await readFile(join(project,'package.json'),'utf8'));
