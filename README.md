@@ -1,6 +1,6 @@
 # suedamA · DeepSeek Canvas
 
-**1.0.0** · Chrome / Edge · [中文](#中文) · [English](#english)
+**1.0.2** · Chrome / Edge · [中文](#中文) · [English](#english)
 
 ## 中文
 
@@ -19,7 +19,7 @@ suedamA 为 [DeepSeek 网页](https://chat.deepseek.com/) 增加可整理的对�
 
 ### 安装
 
-1. 下载并解压 `suedama-deepseek-1.0.0.zip`。
+1. 下载并解压 `suedama-deepseek-1.0.2.zip`。
 2. 打开 `chrome://extensions` 或 `edge://extensions`，开启开发者模式。
 3. 选择“加载已解压的扩展”，选中包含 `manifest.json` 的解压目录。
 4. 刷新已登录的 DeepSeek 页面，在会话右上角点击白板入口，或点击浏览器工具栏的扩展按钮。
@@ -65,7 +65,7 @@ suedamA adds an organized conversation canvas to the [DeepSeek website](https://
 
 ### Install
 
-1. Download and extract `suedama-deepseek-1.0.0.zip`.
+1. Download and extract `suedama-deepseek-1.0.2.zip`.
 2. Open `chrome://extensions` or `edge://extensions` and enable Developer mode.
 3. Choose **Load unpacked** and select the extracted directory containing `manifest.json`.
 4. Refresh your signed-in DeepSeek page. Open the canvas from the conversation header or the browser extension button.

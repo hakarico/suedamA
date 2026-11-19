@@ -37,7 +37,10 @@ a { color:#92b5da;text-decoration:none; } a:hover {text-decoration:underline;}
 .message blockquote {margin:12px 0;padding-left:14px;border-left:2px solid #777;color:#bbb;}
 .message table {border-collapse:collapse;display:block;overflow:auto;max-width:100%;}
 .message td,.message th {padding:5px 10px;border:1px solid #555;}
-.message ul,.message ol {padding-left:25px;margin:12px 0;}.message li{margin:6px 0;}.message li>p{margin-bottom:6px;}.message li>ul,.message li>ol{margin:6px 0 12px;}.message math[display=block]{display:block;overflow:auto;margin:16px 0;text-align:center;}.message math{font-size:1.1em;}
+.message ul,.message ol {padding-left:25px;margin:12px 0;}.message li{margin:6px 0;}.message li>p{margin-bottom:6px;}.message li>ul,.message li>ol{margin:6px 0 12px;}
+/* Let the display attribute select the browser’s MathML layout. */
+.message math[display=block]{overflow:auto hidden;margin:16px 0;text-align:center;}
+.message math{font-size:1.1em;}
 .waiting {min-height:180px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;color:#999;padding:18px;text-align:center;font-size:12px;}
 .waiting .icon {width:100px;height:100px;color:#858585;animation:wait-shimmer 1.8s ease-in-out infinite;}
 .waiting.failed {color:#e27878;}.waiting.failed .icon {animation:none;color:#8d4040;}
