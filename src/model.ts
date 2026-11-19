@@ -3,7 +3,7 @@ export {composePrompt} from './prompt';
 export type Role = 'user' | 'assistant' | 'reasoning';
 export type Point = {x: number; y: number};
 export type Viewport = Point & {zoom: number};
-export type RouteStep = {userKey: string; answerKey?: string; userVersion: number; answerVersion: number; root?: boolean;signature?:string};
+export type RouteStep = {userKey: string; answerKey?: string; userVersion: number; answerVersion: number; root?: boolean;signature?:string;identity?:'server'};
 export type NativeTurn = RouteStep & {question: string; answer: string; reasoning?:string;reasoningLabel?:string};
 export type NativeControl={id:'thinking'|'search'|'attach'|'send';label:string;svg:string;active:boolean;disabled:boolean;style:Record<string,string>};
 export type Snapshot = {conversationId: string; title: string; turns: NativeTurn[]; busy: boolean; atStart?: boolean; leadingAnswerKey?: string;controls?:NativeControl[];files?:string[]};
@@ -22,13 +22,16 @@ export type Appearance={image?:string;brightness:number;blur:number;dots:boolean
 export type GlobalCustomPrompt={text:string;version:string};
 export type CanvasBoard={id:string;title:string;conversationIds:string[];kind?:'standalone'|'group';order?:number;createdAt?:number;appearance?:Appearance;customPrompt?:string;promptPreamble?:string;customPromptVersion?:string;promptPreambleVersion?:string;promptScopeVersion?:string};
 export type SidebarItem={kind:'board'|'session';id:string};
+export type SidebarMove={parent:string;index:number};
 export type SidebarFolder={id:string;title:string;items:SidebarItem[];order:number;createdAt:number};
 export type ResumeSend={boardId:string;baseId:string;conversationId?:string;originConversationId?:string;wire:string;question:string;quotes:Quote[];position:Point;size:{width:number;height:number};stage:'locate'|'submitting';fileCount?:number;id:string;createdAt:number;promptState?:string};
 export type Library = {
   schema: 1; cards: Record<string, Card>; conversations: Record<string, Conversation>;
   cardAliases?:Record<string,string>;sessionOrder?:string[];recentOrder?:SidebarItem[];folders?:Record<string,SidebarFolder>;sidebarSort?:'time'|'manual';sidebarSections?:{boards:boolean;recent:boolean};defaultAppearance?:Appearance;boards?:Record<string,CanvasBoard>;activeBoardId?:string;resume?:ResumeSend;
-  drafts: Record<string, Draft>; viewport?: Viewport; previewViewport?: Viewport;
+  sidebarMoves?:Record<string,SidebarMove>;
   globalCustomPrompt?:GlobalCustomPrompt;
+  preload?:'demand'|'background';
+  drafts: Record<string, Draft>; viewport?: Viewport; previewViewport?: Viewport;
   selectedId?: string; lockedId?: string; selectionCleared?:boolean; views?:Record<string,{canvas?:Viewport;preview?:Viewport}>; revision: number;
 };
 // One palette per real history segment; normal and selected are two states of that palette.
@@ -40,8 +43,11 @@ export const turnId = (conversationId: string, turn: RouteStep) => `${conversati
 export const emptyDraft = (): Draft => ({text: '', quotes: [], mode: 'continue'});
 export const defaultCardSize = (bounds={width:typeof innerWidth==='number'?innerWidth:1040,height:typeof innerHeight==='number'?innerHeight:800}) => ({width:Math.max(280,Math.min(1100,bounds.width-160)*.75),height:Math.max(280,Math.min(1000,bounds.height-200))});
 export const displayQuestion = (card:Card) => card.prompt ?? parsePrompt(card.question)?.userMessage ?? (card.annotations.length && card.question.startsWith('以下是我提供的引用材料：') ? card.question.split('\n\n我的问题：\n').at(-1)! : card.question);
+export function reasoningTitle(label='思考'){
+  const text=label.replace(/\s+/g,' ').trim();return text.match(/^(.{2,}?)(?:\s*\1)+$/u)?.[1]?.trim()||text||'思考';
+}
 export function turnSignature(question:string,answer:string){let hash=2166136261;for(const c of question+'\u0000'+answer)hash=Math.imul(hash^c.charCodeAt(0),16777619);return 'h'+(hash>>>0).toString(16).padStart(8,'0');}
-export const sameStep = (a: RouteStep, b: RouteStep) => (b.answerKey ? a.answerKey === b.answerKey : a.userKey === b.userKey) && (!b.signature || b.signature===(a.signature??('question' in a?turnSignature(String(a.question),String((a as NativeTurn).answer)):undefined)));
+export const sameStep = (a: RouteStep, b: RouteStep) => (b.answerKey ? a.answerKey === b.answerKey : a.userKey === b.userKey) && (b.identity==='server' ? a.userKey===b.userKey||a.userKey.startsWith('-') : !b.signature || b.signature===(a.signature??('question' in a?turnSignature(String(a.question),String((a as NativeTurn).answer)):undefined)));
 export function nextCardPosition(cards:Record<string,Card>,conversationId:string,parentId:string|null,size:{width:number;height:number},ignore:string[]=[]):Point {
   const list=Object.values(cards).filter(c=>c.conversationId===conversationId && !ignore.includes(c.id));
   const parent=parentId?cards[parentId]:undefined;
@@ -71,14 +77,14 @@ export function reconcileCardAliases(library:Library):Library{
   for(const [from,to]of Object.entries(aliases)){if(typeof to!=='string')throw new Error('备份卡片替换关系无效。');raw(from);}
   const active={...aliases};for(const [from,to]of Object.entries(aliases)){const old=library.cards[from],target=library.cards[raw(to)];if(old&&target&&(old.question!==target.question||old.conversationId!==target.conversationId||old.route.at(-1)?.userVersion!==target.route.at(-1)?.userVersion||old.route.at(-1)?.answerVersion!==target.route.at(-1)?.answerVersion||raw(old.parentId??'')!==raw(target.parentId??'')))delete active[from];}
   const resolve=(id:string):string=>{const seen=new Set<string>();while(active[id]){if(seen.has(id))throw new Error('备份卡片替换关系循环。');seen.add(id);id=active[id]!;}return id;};
-  const quote=(q:Quote):Quote=>active[q.sourceId]?{...q,sourceId:resolve(q.sourceId)}:q;
+  const quote=(q:Quote):Quote=>{if(!q||typeof q.sourceId!=='string')throw new Error('备份引用无效。');return active[q.sourceId]?{...q,sourceId:resolve(q.sourceId)}:q;};
   const cards={...library.cards};for(const from of Object.keys(active)){const to=resolve(from);if(!cards[to])throw new Error('备份卡片替换目标不存在。');if(from!==to)delete cards[from];}
   for(const [id,c]of Object.entries(cards))cards[id]={...c,route:c.route.map(step=>{const source=turnId(c.conversationId,step),target=active[source]?cards[resolve(source)]?.route.at(-1):undefined;return target?{...step,userKey:target.userKey,answerKey:target.answerKey}:step;}),parentId:c.parentId?resolve(c.parentId):null,lineId:c.lineId?resolve(c.lineId):undefined,annotations:c.annotations.map(quote)};
   const drafts:Record<string,Draft>={};for(const [id,d]of Object.entries(library.drafts)){const to=resolve(id);if(!drafts[to]||id===to)drafts[to]={...d,quotes:d.quotes.map(quote)};}
-  return {...library,cards,drafts,cardAliases:aliases,selectedId:library.selectedId?resolve(library.selectedId):undefined,lockedId:library.lockedId?resolve(library.lockedId):undefined,conversations:Object.fromEntries(Object.entries(library.conversations).map(([id,c])=>[id,{...c,activeIds:[...new Set(c.activeIds.map(resolve))]}]))};
+  return {...library,cards,drafts,cardAliases:aliases,resume:library.resume?{...library.resume,baseId:resolve(library.resume.baseId),quotes:library.resume.quotes.map(quote)}:undefined,selectedId:library.selectedId?resolve(library.selectedId):undefined,lockedId:library.lockedId?resolve(library.lockedId):undefined,conversations:Object.fromEntries(Object.entries(library.conversations).map(([id,c])=>[id,{...c,activeIds:[...new Set(c.activeIds.map(resolve))]}]))};
 }
 
-export function mergeSnapshot(library: Library, snapshot: Snapshot): Library {
+export function mergeSnapshot(library: Library, snapshot: Snapshot,recordActivity=true): Library {
   if (!snapshot.conversationId || !snapshot.turns.length) return library;
   const cards = {...library.cards};
   const defaultSize=defaultCardSize();
@@ -87,6 +93,7 @@ export function mergeSnapshot(library: Library, snapshot: Snapshot): Library {
   let parentId: string | null = null;
   let route: RouteStep[] = [];
   let changed = previous?.title !== snapshot.title;
+  let contentChanged=false;
   const promoted = new Map<string,string>();
   for (const [index, incomingTurn] of snapshot.turns.entries()) {
     // Ignore a late observer notification for a key already replaced by its official identity.
@@ -99,13 +106,15 @@ export function mergeSnapshot(library: Library, snapshot: Snapshot): Library {
     const sameUser=Object.values(cards).find(c=>c.conversationId===snapshot.conversationId&&c.question===turn.question&&c.route.at(-1)?.userKey===turn.userKey&&c.route.at(-1)?.userVersion===turn.userVersion&&c.route.at(-1)?.answerVersion===turn.answerVersion);
     const transient=Object.values(cards).filter(c=>c.conversationId===snapshot.conversationId&&c.parentId===parentId&&c.question===turn.question&&(!c.answer.trim()||!c.route.at(-1)?.answerKey||c.route.at(-1)!.answerKey!.startsWith('-'))&&c.route.at(-1)?.userVersion===turn.userVersion&&c.route.at(-1)?.answerVersion===turn.answerVersion);
     const existing = cards[id] ?? cards[pendingId] ?? sameUser ?? (transient.length===1?transient[0]:undefined);
+    const official=existing?.route.at(-1);
+    if(official?.identity==='server'&&turn.answerKey===official.answerKey&&turn.userKey.startsWith('-'))turn={...turn,userKey:official.userKey,identity:'server'};
     if (!index && snapshot.atStart===false) {
       // A virtualized suffix can start with the preceding assistant message.
       const preceding=snapshot.leadingAnswerKey ? Object.values(cards).find(c=>c.conversationId===snapshot.conversationId && c.route.at(-1)?.answerKey===snapshot.leadingAnswerKey) : undefined;
       parentId = preceding?.id ?? existing?.parentId ?? null;
       route = parentId ? cards[parentId]?.route ?? [] : [];
     }
-    route = [...route, {userKey: turn.userKey, answerKey: turn.answerKey, userVersion: turn.userVersion, answerVersion: turn.answerVersion,signature:turnSignature(turn.question,turn.answer),...(!route.length ? {root:snapshot.atStart!==false} : {})}];
+    route = [...route, {userKey: turn.userKey, answerKey: turn.answerKey, userVersion: turn.userVersion, answerVersion: turn.answerVersion,signature:turnSignature(turn.question,turn.answer),...(turn.identity==='server'||existing?.route.at(-1)?.identity==='server'&&existing.route.at(-1)?.answerKey===turn.answerKey?{identity:'server' as const}:{}),...(!route.length ? {root:snapshot.atStart!==false} : {})}];
     const siblings = Object.values(cards).filter(c => c.conversationId === snapshot.conversationId && c.parentId === parentId && c.id !== id && c.id !== pendingId);
     const parent: Card | undefined = parentId ? cards[parentId] : undefined;
     const repairing=existing?.route[0]?.root===false && route[0]?.root===true;
@@ -115,12 +124,14 @@ export function mergeSnapshot(library: Library, snapshot: Snapshot): Library {
     const historyColor = lineMember?.historyColor ?? (!repairing ? existing?.historyColor : undefined) ?? (parent ? (parent.historyColor+(variant?1+siblings.filter(c=>historyLine(c,cards)!==historyLine(parent,cards)).length:0))%HISTORY_COLORS.length : siblings.length%HISTORY_COLORS.length);
     const repairedPartial=existing?.route[0]?.root===false && route[0]?.root===true;
     const position = (repairedPartial ? undefined : existing?.position) ?? nextCardPosition(cards,snapshot.conversationId,parentId,defaultSize,[id,pendingId]);
+    const contentUpdated=!existing||existing.question!==turn.question||existing.answer!==turn.answer;
+    if(contentUpdated)contentChanged=true;
     if (!existing || existing.question !== turn.question || existing.answer !== turn.answer || turn.reasoning!==undefined&&existing.reasoning!==turn.reasoning || turn.reasoningLabel!==undefined&&existing.reasoningLabel!==turn.reasoningLabel || JSON.stringify(existing.route) !== JSON.stringify(route)) {
       cards[id] = {...existing, id, conversationId: snapshot.conversationId, parentId,
         route, question: turn.question, prompt:parsePrompt(turn.question)?.userMessage??(existing?.question===turn.question?existing?.prompt:undefined), answer: turn.answer, reasoning:turn.reasoning??existing?.reasoning,reasoningLabel:turn.reasoningLabel??existing?.reasoningLabel, position,
         width: existing?.width ?? defaultSize.width, height: existing?.height ?? defaultSize.height,
         color: existing?.color ?? 0, lineId, historyColor: Math.max(0, historyColor), bookmarked: existing?.bookmarked ?? false,
-        archived: existing?.archived ?? false, annotations: existing?.annotations ?? [], updatedAt: Date.now()};
+        archived: existing?.archived ?? false, annotations: existing?.annotations ?? [], updatedAt:contentUpdated?Date.now():existing!.updatedAt};
       changed = true;
     }
     for(const ghost of [existing,...transient])if(ghost&&ghost.id!==id&&cards[ghost.id]){delete cards[ghost.id];promoted.set(ghost.id,id);changed=true;}
@@ -140,7 +151,7 @@ export function mergeSnapshot(library: Library, snapshot: Snapshot): Library {
   const conversations={...library.conversations};
   if(promoted.size)for(const [id,c]of Object.entries(conversations))conversations[id]={...c,activeIds:c.activeIds.map(id=>promoted.get(id)??id)};
   // Viewing a previously collected branch must not promote it in "recently updated" order.
-  const updatedAt=Math.max(previous?.updatedAt??0,...activeIds.map(id=>cards[id]!.updatedAt));
+  const updatedAt=recordActivity&&contentChanged?Math.max(previous?.updatedAt??0,Date.now()):previous?.updatedAt??0;
   return reconcileCardAliases({...library,cardAliases:{...library.cardAliases,...Object.fromEntries(promoted)}, cards, drafts, selectedId: library.selectedId ? promoted.get(library.selectedId) ?? library.selectedId : undefined, lockedId:library.lockedId?promoted.get(library.lockedId)??library.lockedId:undefined, conversations: {...conversations, [snapshot.conversationId]: {id: snapshot.conversationId, title: snapshot.title, activeIds, updatedAt}}, revision: library.revision + 1});
 }
 
@@ -157,9 +168,16 @@ export const roleLabel=(role:Role)=>role==='user'?'用户提问':role==='reasoni
 
 const object = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
 const finite = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
-const validRoute = (x: unknown): x is RouteStep[] => Array.isArray(x) && x.length > 0 && x.length < 10000 && x.every(s => object(s) && typeof s.userKey === 'string' && /^-?\w[\w.-]*$/.test(s.userKey) && (s.answerKey === undefined || typeof s.answerKey === 'string' && /^-?\w[\w.-]*$/.test(s.answerKey)) && Number.isInteger(s.userVersion) && Number(s.userVersion)>0 && Number.isInteger(s.answerVersion) && Number(s.answerVersion)>0);
+const validRoute = (x: unknown): x is RouteStep[] => Array.isArray(x) && x.length > 0 && x.length < 10000 && x.every(s => object(s) && typeof s.userKey === 'string' && /^-?\w[\w.-]*$/.test(s.userKey) && (s.answerKey === undefined || typeof s.answerKey === 'string' && /^-?\w[\w.-]*$/.test(s.answerKey)) && (s.identity===undefined||s.identity==='server'&&typeof s.answerKey==='string'&&/^[1-9]\d*$/.test(s.answerKey)&&/^[1-9]\d*$/.test(String(s.userKey))) && Number.isInteger(s.userVersion) && Number(s.userVersion)>0 && Number.isInteger(s.answerVersion) && Number(s.answerVersion)>0);
 export function validateLibrary(value:unknown):Library{
-  if(object(value)&&value.cardAliases!==undefined){if(!object(value.cardAliases)||!object(value.cards)||!object(value.conversations)||!object(value.drafts))throw new Error('备份卡片替换关系无效。');value=reconcileCardAliases(value as unknown as Library);}
+  if(object(value)&&value.cardAliases!==undefined){if(!object(value.cardAliases))throw new Error('备份卡片替换关系无效。');
+    // Validate structures before alias traversal touches routes, quotes or activeIds.
+    // Cross references are checked again after promotions have been reconciled.
+    for(const to of Object.values(value.cardAliases))if(typeof to!=='string'||!to)throw new Error('备份卡片替换关系无效。');
+    if(!object(value.cards)||!object(value.conversations)||!object(value.drafts))throw new Error('不是受支持的 suedamA 备份。');
+    if(Object.values(value.cards).some(c=>!object(c)||!validRoute(c.route)||!Array.isArray(c.annotations))||Object.values(value.conversations).some(c=>!object(c)||!Array.isArray(c.activeIds))||Object.values(value.drafts).some(d=>!object(d)||!Array.isArray(d.quotes)))throw new Error('备份包含无效卡片或草稿。');
+    if(value.resume!==undefined&&(!object(value.resume)||!Array.isArray(value.resume.quotes)))throw new Error('未完成的提交记录无效。');
+    value=reconcileCardAliases(value as unknown as Library);}
   return validateLibraryData(value);
 }
 function validateLibraryData(value: unknown): Library {
@@ -167,7 +185,9 @@ function validateLibraryData(value: unknown): Library {
   if(value.globalCustomPrompt!==undefined&&(!object(value.globalCustomPrompt)||typeof value.globalCustomPrompt.text!=='string'||typeof value.globalCustomPrompt.version!=='string'))throw new Error('备份全局提示词无效。');
   if(value.sessionOrder!==undefined&&(!Array.isArray(value.sessionOrder)||value.sessionOrder.some(id=>typeof id!=='string')||new Set(value.sessionOrder).size!==value.sessionOrder.length))throw new Error('备份会话排序无效。');
   if(value.recentOrder!==undefined&&(!Array.isArray(value.recentOrder)||value.recentOrder.some(i=>!object(i)||!['board','session'].includes(String(i.kind))||typeof i.id!=='string')||new Set(value.recentOrder.map(i=>i.kind+':'+i.id)).size!==value.recentOrder.length))throw new Error('备份最近排序无效。');
+  if(value.preload!==undefined&&!['demand','background'].includes(String(value.preload)))throw new Error('备份预加载设置无效。');
   if(value.sidebarSort!==undefined&&!['time','manual'].includes(String(value.sidebarSort)))throw new Error('备份侧栏排序无效。');
+  if(value.sidebarMoves!==undefined&&(!object(value.sidebarMoves)||Object.values(value.sidebarMoves).some(move=>!object(move)||typeof move.parent!=='string'||!Number.isSafeInteger(move.index)||Number(move.index)<0)))throw new Error('备份侧栏排序无效。');
   if(value.sidebarSections!==undefined&&(!object(value.sidebarSections)||typeof value.sidebarSections.boards!=='boolean'||typeof value.sidebarSections.recent!=='boolean'))throw new Error('备份侧栏分区无效。');
   if(value.folders!==undefined){
     if(!object(value.folders)||Object.keys(value.folders).length>2000)throw new Error('备份整理文件夹无效。');

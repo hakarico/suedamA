@@ -19,12 +19,18 @@ export function itemUpdatedAt(library:Library,item:SidebarItem):number{
   if(item.kind==='session')return library.conversations[item.id]?.updatedAt??0;
   return Math.max(library.boards?.[item.id]?.createdAt??0,...(library.boards?.[item.id]?.conversationIds??[]).map(id=>library.conversations[id]?.updatedAt??0));
 }
-export function sortedItems(library:Library,items:SidebarItem[]){
-  return sidebarSort(library)==='time'?[...items].sort((a,b)=>itemUpdatedAt(library,b)-itemUpdatedAt(library,a)):items;
+export function sortedItems(library:Library,items:SidebarItem[]){return sortedMembers(library,items,'recent');}
+export function sortedMembers(library:Library,items:SidebarItem[],parent:string){return sortInParent(library,items,parent,itemKey,item=>itemUpdatedAt(library,item));}
+function sortInParent<T>(library:Library,items:T[],parent:string,key:(item:T)=>string,time:(item:T)=>number):T[]{
+  const base=[...items].sort((a,b)=>time(b)-time(a));if(sidebarSort(library)==='time')return base;
+  const moves=library.sidebarMoves??migrateSidebarMoves(library).sidebarMoves??{};
+  const pinned=base.filter(item=>moves[key(item)]?.parent===parent).sort((a,b)=>moves[key(a)]!.index-moves[key(b)]!.index);
+  const result=base.filter(item=>moves[key(item)]?.parent!==parent);
+  for(const item of pinned)result.splice(Math.min(moves[key(item)]!.index,result.length),0,item);
+  return result;
 }
 export function sortedFolders(library:Library):SidebarFolder[]{
-  const folders=Object.values(library.folders??{}).sort((a,b)=>a.order-b.order);
-  return sidebarSort(library)==='time'?folders.sort((a,b)=>Math.max(b.createdAt,...b.items.map(i=>itemUpdatedAt(library,i)))-Math.max(a.createdAt,...a.items.map(i=>itemUpdatedAt(library,i)))):folders;
+  return sortInParent(library,Object.values(library.folders??{}),'folders',folder=>'folder:'+folder.id,folder=>Math.max(folder.createdAt,...folder.items.map(item=>itemUpdatedAt(library,item))));
 }
 export function withoutFolderItem(library:Library,item:SidebarItem):Library{
   const key=itemKey(item);return {...library,folders:Object.fromEntries(Object.values(library.folders??{}).map(f=>[f.id,{...f,items:f.items.filter(i=>itemKey(i)!==key)}]))};
@@ -41,8 +47,39 @@ export function recentItems(library:Library,nativeIds:string[]=[]):SidebarItem[]
   const sessionIds=[...new Set([...nativeIds,...Object.keys(library.conversations)])];
   const sessions=sessionIds.filter(id=>!library.conversations[id]?.deleted&&boardForConversation(library,id)?.kind!=='group').map(id=>({kind:'session' as const,id}));
   const items=[...boards,...sessions].filter(item=>!folderForItem(library,item));
-  const fallback=library.recentOrder??[...boards,...(library.sessionOrder??sessionIds).map(id=>({kind:'session' as const,id}))];
-  const ranks=new Map(fallback.map((item,i)=>[itemKey(item),i]));
-  items.sort((a,b)=>(ranks.get(itemKey(a))??Infinity)-(ranks.get(itemKey(b))??Infinity));
   return sortedItems(library,items);
+}
+
+/** Recover a minimal set of moved rows from old full-list order snapshots. */
+export function migrateSidebarMoves(library:Library):Library{
+  if(library.sidebarMoves)return library;
+  const moves:NonNullable<Library['sidebarMoves']>={};
+  const infer=(base:string[],legacy:string[],parent:string)=>{
+    const ranks=new Map(base.map((key,index)=>[key,index])),desired=legacy.filter(key=>ranks.has(key));
+    const tails:number[]=[],previous:number[]=[];
+    for(const [index,key]of desired.entries()){
+      let low=0,high=tails.length;while(low<high){const mid=(low+high)>>>1;if(ranks.get(desired[tails[mid]!]!)!<ranks.get(key)!)low=mid+1;else high=mid;}
+      previous[index]=low?tails[low-1]!:-1;tails[low]=index;
+    }
+    const kept=new Set<string>();for(let index=tails.at(-1)??-1;index>=0;index=previous[index]!)kept.add(desired[index]!);
+    desired.forEach((key,index)=>{if(!kept.has(key))moves[key]={parent,index};});
+  };
+  if(sidebarSort(library)==='manual'){
+    const timed={...library,sidebarSort:'time' as const};
+    const legacy=library.recentOrder??[...Object.values(library.boards??{}).filter(b=>b.kind==='group').sort((a,b)=>(a.order??0)-(b.order??0)).map(b=>({kind:'board' as const,id:b.id})),...(library.sessionOrder??Object.keys(library.conversations)).map(id=>({kind:'session' as const,id}))];
+    infer(recentItems(timed).map(itemKey),legacy.map(itemKey),'recent');
+    for(const board of Object.values(library.boards??{})){const items=board.conversationIds.map(id=>({kind:'session' as const,id}));infer(sortedItems(timed,items).map(itemKey),items.map(itemKey),'board:'+board.id);}
+    for(const folder of Object.values(library.folders??{}))infer(sortedItems(timed,folder.items).map(itemKey),folder.items.map(itemKey),'folder:'+folder.id);
+    infer(sortedFolders(timed).map(f=>'folder:'+f.id),Object.values(library.folders??{}).sort((a,b)=>a.order-b.order).map(f=>'folder:'+f.id),'folders');
+  }
+  return {...library,sidebarMoves:moves};
+}
+
+/** Only dragged rows receive positions; all other rows continue to follow activity. */
+export function recordSidebarMove(library:Library,parent:string,keys:string[],moved:string):Library{
+  const moves={...migrateSidebarMoves(library).sidebarMoves};
+  const ranks=new Map(keys.map((key,index)=>[key,index]));
+  for(const [key,move]of Object.entries(moves))if(move.parent===parent&&ranks.has(key))moves[key]={...move,index:ranks.get(key)!};
+  if(ranks.has(moved))moves[moved]={parent,index:ranks.get(moved)!};
+  return {...library,sidebarMoves:moves,sidebarSort:'manual'};
 }

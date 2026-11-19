@@ -6,19 +6,21 @@ import {packLibrary,unpackLibrary} from '../src/storage-codec';
 import {ArchivePanel,archiveGroups} from '../src/ArchivePanel';
 import {NativeConversation} from '../src/NativeConversation';
 import {SettingsPanel,PromptSettings} from '../src/SettingsPanel';
+import {CardBody} from '../src/Canvas';
+import {selectedNotes} from '../src/notes';
 import {AnnotationChip} from '../src/AnnotationChip';
 import {localeFromLanguage,translate} from '../src/i18n';
 import {nativeParts,nativeSelection,selectedParts} from '../src/native-selection';
 import {installNativeReference,nativeReferenceBlocks} from '../src/native-reference';
 import {parsePrompt,DEFAULT_PREAMBLE,nativeRootTurn,LEGACY_PREAMBLE,PREVIOUS_PREAMBLE,openingGuidance,effectivePrompt,promptSendMode} from '../src/prompt';
 import {NativeBoardList} from '../src/NativeBoardList';
-import {folderForItem,sidebarSort,sortedItems,sortedFolders,sidebarEdgeSpeed,recentItems} from '../src/sidebar';
+import {folderForItem,sidebarSort,sortedItems,sortedMembers,sortedFolders,sidebarEdgeSpeed,recentItems,migrateSidebarMoves,recordSidebarMove} from '../src/sidebar';
 import {installSidebarDrag} from '../src/sidebar-drag';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Window} from 'happy-dom';
 import {DeepSeekAdapter,PageNavigation} from '../src/adapter';
-import {emptyLibrary,mergeSnapshot,makeQuote,turnQuotes,composePrompt,validateLibrary,turnId,historyLine,sameStep,type Snapshot} from '../src/model';
+import {emptyLibrary,mergeSnapshot,makeQuote,turnQuotes,composePrompt,validateLibrary,turnId,historyLine,sameStep,reasoningTitle,type Snapshot} from '../src/model';
 import {isArchived,archivedCards,recolorLine,previewLayout,archiveLeaf} from '../src/topology';
 import {isChromeMutation} from '../src/dom-observers';
 import {cardChain} from './performance-data';
@@ -32,6 +34,8 @@ import {readMarkdown} from '../src/markdown';
 import {marked} from 'marked';
 import formatSample from './native-format.json';
 import {installFixture,cid} from './fixture';
+import {fixtureHistory} from './history-fixture';
+import type {NativeLocator,NativeIdentity} from '../src/native-navigation';
 const win=new Window({url:`http://127.0.0.1:3097/a/chat/s/${cid}`});
 for(const name of ['window','document','Node','Element','HTMLElement','HTMLTextAreaElement','HTMLInputElement','KeyboardEvent','DataTransfer','FileReader','MutationObserver','Event','localStorage']) Object.defineProperty(globalThis,name,{configurable:true,value:name==='window'?win:(win as unknown as Record<string,unknown>)[name]});
 for(const name of ['innerWidth','innerHeight','requestAnimationFrame','cancelAnimationFrame'] as const){const value=win[name];Object.defineProperty(globalThis,name,{configurable:true,value:typeof value==='function'?value.bind(win):value});}
@@ -157,6 +161,270 @@ test('separate tabs preserve unrelated cards and field changes during persistenc
   assert.ok(result.cards[id]!.bookmarked);assert.equal(result.cards[id]!.position.x,1234);
   const c=mergeSnapshot(base,{...snap(),conversationId:'another'});const merged=mergeLocalChanges(result,base,c);
   assert.ok(merged.cards['another:answer:2']);assert.ok(merged.cards[id]!.bookmarked);
+});
+
+test('repeated answer promotions save alias strings atomically and survive reload',async()=>{
+  localStorage.clear();const storage=new LibraryStorage('alias-promotions');
+  const pending=snap('');pending.turns[0]!.userKey='101';pending.turns[0]!.answerKey='102';
+  let library=mergeSnapshot(emptyLibrary(),pending);await storage.save(library);
+  library=mergeSnapshot(library,snap('正式回答'));await storage.save(library);
+  const replacement=snap('重载回答');replacement.turns[0]!.answerKey='200';
+  library=mergeSnapshot(library,replacement);await storage.save(library);
+  const loaded=await new LibraryStorage('alias-promotions').load();
+  assert.equal(typeof loaded.cardAliases!['sample:answer:102'],'string');
+  assert.equal(Object.keys(loaded.cards).length,1);assert.equal(loaded.cards['sample:answer:200']!.answer,'重载回答');validateLibrary(loaded);
+});
+
+test('storage baseline is isolated from callers and stale tabs retain edits after promotion',async()=>{
+  localStorage.clear();const key='alias-stale-edits',first=new LibraryStorage(key),second=new LibraryStorage(key);
+  const pending=snap('');delete pending.turns[0]!.answerKey;
+  await first.save(mergeSnapshot(emptyLibrary(),pending));const before=await first.load(),stale=await second.load();
+  const old=Object.keys(before.cards)[0]!;await first.save(mergeSnapshot(before,snap()));
+  // Mutating the returned library must not mutate the storage change baseline.
+  stale.cards[old]!.bookmarked=true;stale.cards[old]!.position={x:876,y:543};
+  await second.save(stale);const loaded=await first.load();
+  assert.equal(Object.keys(loaded.cards).length,1);assert.ok(loaded.cards['sample:answer:2']!.bookmarked);assert.equal(loaded.cards['sample:answer:2']!.position.x,876);
+});
+
+test('concurrent session moves retain one owner and both tabs other board changes',()=>{
+  const base=mergeSnapshot(emptyLibrary(),snap());base.boards={a:{id:'a',title:'A',conversationIds:['sample'],kind:'group'},b:{id:'b',title:'B',conversationIds:[],kind:'group'},c:{id:'c',title:'C',conversationIds:[],kind:'group'}};
+  const latest=structuredClone(base),incoming=structuredClone(base);latest.boards!.a!.conversationIds=[];latest.boards!.b!.conversationIds=['sample'];latest.boards!.b!.title='本地B';incoming.boards!.a!.conversationIds=[];incoming.boards!.c!.conversationIds=['sample'];
+  const merged=validateLibrary(mergeLocalChanges(latest,base,incoming));assert.deepEqual(merged.boards!.b!.conversationIds,[]);assert.deepEqual(merged.boards!.c!.conversationIds,['sample']);assert.equal(merged.boards!.b!.title,'本地B');
+});
+
+test('concurrent additions to one board preserve both newly attached sessions',()=>{
+  const base=emptyLibrary();base.boards={b:{id:'b',title:'B',conversationIds:[],kind:'group'}};
+  const latest=mergeSnapshot(base,{...snap(),conversationId:'first'}),incoming=mergeSnapshot(base,{...snap(),conversationId:'second'});
+  latest.boards={b:{...base.boards.b!,conversationIds:['first']}};incoming.boards={b:{...base.boards.b!,conversationIds:['second']}};
+  const merged=validateLibrary(mergeLocalChanges(latest,base,incoming));assert.deepEqual(new Set(merged.boards!.b!.conversationIds),new Set(['first','second']));
+});
+
+test('a stale tab can clear a draft after its source card was promoted',()=>{
+  const pending=snap('');delete pending.turns[0]!.answerKey;const before=mergeSnapshot(emptyLibrary(),pending),old=Object.keys(before.cards)[0]!;
+  before.drafts[old]={text:'已接受的草稿',mode:'continue',quotes:[]};const latest=mergeSnapshot(before,snap()),incoming={...before,drafts:{}};
+  const merged=validateLibrary(mergeLocalChanges(latest,before,incoming));assert.deepEqual(merged.drafts,{});assert.equal(Object.keys(merged.cards).length,1);
+});
+
+test('branch recollection discovers unseen native versions and restores the original route',async()=>{
+  const {adapter,page}=fixture();page.setBranch(2);const original=adapter.read();let library=emptyLibrary();
+  const result=await adapter.scanBranches(snapshot=>library=mergeSnapshot(library,snapshot));
+  assert.equal(result.branches,2);assert.equal(result.turns,4);assert.equal(Object.keys(library.cards).length,4);assert.equal(page.getBranch(),2);assert.deepEqual(adapter.read().turns,original.turns);validateLibrary(library);
+});
+
+test('branch recollection pauses for native drafts and restores versions on cancellation',async()=>{
+  const {adapter,page}=fixture();const input=document.querySelector('textarea')!;input.value='保留草稿';
+  await assert.rejects(()=>adapter.scanBranches(()=>{}),/草稿或附件/);assert.equal(input.value,'保留草稿');assert.equal(page.getBranch(),1);input.value='';
+  let running=true;await assert.rejects(()=>adapter.scanBranches(snapshot=>{if(snapshot.turns[1]?.userVersion===2)running=false;},()=>running),/停止收集/);
+  assert.equal(page.getBranch(),1);assert.equal(adapter.navigationInProgress(),false);
+  const result=await adapter.scanBranches(()=>{});assert.equal(result.branches,2,'cancelled collection releases its operation state');
+});
+
+test('branch traversal collects nested user and assistant versions with their real parents',async()=>{
+  fixture();const main=document.querySelector('main')!,state={u:2,a:2,v:2,b:2};
+  const render=()=>{
+    main.replaceChildren();
+    const message=(key:string,role:'user'|'answer',text:string,index:number,set:(version:number)=>void)=>{
+      const shell=document.createElement('div');shell.dataset.virtualListItemKey=key;
+      const body=document.createElement('div');body.className='ds-message';const content=document.createElement('div');content.className=role==='user'?'ds-collapsible-text':'ds-assistant-message-main-content';content.textContent=text;body.append(content);shell.append(body);
+      const control=document.createElement('div'),previous=document.createElement('button'),counter=document.createElement('span'),next=document.createElement('button');
+      counter.textContent=`${index} / 2`;previous.disabled=index===1;next.disabled=index===2;previous.onclick=()=>{set(index-1);render();};next.onclick=()=>{set(index+1);render();};control.append(previous,counter,next);shell.append(control);main.append(shell);
+    };
+    message('root-user-'+state.u,'user','根问题'+state.u,state.u,version=>Object.assign(state,{u:version,a:1,v:1,b:1}));
+    message(`root-answer-${state.u}-${state.a}`,'answer',`根回答${state.u}/${state.a}`,state.a,version=>Object.assign(state,{a:version,v:1,b:1}));
+    message(`child-user-${state.u}-${state.a}-${state.v}`,'user',`后续问题${state.u}/${state.a}/${state.v}`,state.v,version=>Object.assign(state,{v:version,b:1}));
+    message(`child-answer-${state.u}-${state.a}-${state.v}-${state.b}`,'answer',`后续回答${state.u}/${state.a}/${state.v}/${state.b}`,state.b,version=>state.b=version);
+  };render();const adapter=new DeepSeekAdapter(document,()=>win.location.href);let library=emptyLibrary();
+  const result=await adapter.scanBranches(snapshot=>library=mergeSnapshot(library,snapshot));
+  assert.deepEqual(state,{u:2,a:2,v:2,b:2});assert.deepEqual(result,{branches:16,turns:20});assert.equal(Object.keys(library.cards).length,20);
+  for(const card of Object.values(library.cards).filter(card=>card.parentId))assert.equal(library.cards[card.parentId!]!.id,`${cid}:answer:root-answer-${card.route[0]!.userVersion}-${card.route[0]!.answerVersion}`);
+  validateLibrary(library);
+});
+
+test('branch collection reaches version controls outside the virtual viewport and restores scroll',async()=>{
+  fixture();const main=document.querySelector('main')!;main.replaceChildren();
+  const scroller=document.createElement('div'),visible=document.createElement('div');scroller.className='ds-virtual-list ds-scroll-area';visible.className='ds-virtual-list-visible-items';scroller.append(visible);main.append(scroller);
+  Object.defineProperty(scroller,'clientHeight',{value:600});Object.defineProperty(scroller,'scrollHeight',{value:3200});
+  let branch=2,rows:HTMLElement[]=[];
+  scroller.scrollTo=(options?:ScrollToOptions|number)=>{
+    scroller.scrollTop=Math.max(0,Math.min(2600,typeof options==='number'?options:options?.top??0));const start=Math.floor(scroller.scrollTop/200);
+    visible.style.setProperty('--dsl-virtual-list-transform-y',String(start*200));visible.replaceChildren(...rows.slice(start,start+5));
+  };
+  const render=()=>{
+    rows=[];
+    for(let i=0;i<8;i++)for(const role of ['user','answer'] as const){
+      const shell=document.createElement('div'),message=document.createElement('div'),body=document.createElement('div');
+      const key=`${role}-${i}-${i<4?1:branch}`;shell.dataset.virtualListItemKey=key;message.className='ds-message';body.className=role==='user'?'ds-collapsible-text':'ds-assistant-message-main-content';body.textContent=key;message.append(body);shell.append(message);
+      const position=rows.length*200;shell.getBoundingClientRect=()=>({top:position-scroller.scrollTop,bottom:position+200-scroller.scrollTop,left:0,right:480,width:480,height:200,x:0,y:position-scroller.scrollTop,toJSON:()=>({})});
+      if(i===4&&role==='user'){
+        const control=document.createElement('div'),previous=document.createElement('button'),counter=document.createElement('span'),next=document.createElement('button');counter.textContent=`${branch} / 2`;previous.disabled=branch===1;next.disabled=branch===2;
+        previous.onclick=()=>{branch=1;render();};next.onclick=()=>{branch=2;render();};control.append(previous,counter,next);shell.append(control);
+      }rows.push(shell);
+    }scroller.scrollTo({top:scroller.scrollTop});
+  };render();scroller.scrollTo({top:900});const adapter=new DeepSeekAdapter(document,()=>win.location.href);let library=emptyLibrary();
+  const scan=adapter.scanCurrent.bind(adapter),starts:number[]=[];adapter.scanCurrent=async(index=0)=>{starts.push(index);return scan(index);};
+  const result=await adapter.scanBranches(snapshot=>library=mergeSnapshot(library,snapshot));
+  assert.deepEqual(result,{branches:2,turns:12});assert.equal(branch,2);assert.equal(scroller.scrollTop,900);assert.equal(Object.keys(library.cards).length,12);validateLibrary(library);
+  assert.ok(starts.slice(1).every(index=>index===4),'changing a deep fork must retain the already collected prefix');
+});
+
+test('automatic recollection reuses unchanged branches while explicit recollection and new versions rescan',async()=>{
+  const {adapter,page}=fixture(),scan=adapter.scanCurrent.bind(adapter);let scans=0;
+  adapter.scanCurrent=async(index=0)=>{scans++;return scan(index);};
+  await adapter.scanBranches(()=>{});const complete=scans;assert.ok(complete>1);
+  scans=0;await adapter.scanBranches(()=>{},()=>true,true);assert.equal(scans,1);
+  scans=0;await adapter.scanBranches(()=>{});assert.ok(scans>1);
+  page.versions.push([page.versions[1]![0]!,{...page.versions[1]![1]!,u:'9',a:'10',q:'新增分支'}]);page.render();scans=0;await adapter.scanBranches(()=>{},()=>true,true);assert.ok(scans>1,'a changed native version count invalidates the branch cache');assert.equal(page.getBranch(),1);
+});
+
+test('manual sorting inherits activity and pins only rows that the user moved',()=>{
+  let library=emptyLibrary();library.sidebarSort='manual';library.sidebarMoves={};
+  for(const [id,updatedAt]of [['a',10],['b',30],['c',20]] as const)library.conversations[id]={id,title:id,updatedAt,activeIds:[]};
+  const order=()=>recentItems(library).map(item=>item.id);assert.deepEqual(order(),['b','c','a']);
+  library=recordSidebarMove(library,'recent',['session:a','session:b','session:c'],'session:a');assert.deepEqual(order(),['a','b','c']);assert.deepEqual(Object.keys(library.sidebarMoves!),['session:a']);
+  library.conversations.d={id:'d',title:'new',updatedAt:100,activeIds:[]};assert.deepEqual(order(),['a','d','b','c']);
+  library.conversations.c!.updatedAt=110;assert.deepEqual(order(),['a','c','d','b']);
+  library.sidebarSort='time';assert.deepEqual(order(),['c','d','b','a']);library.sidebarSort='manual';assert.deepEqual(order(),['a','c','d','b']);
+  assert.deepEqual(recentItems(validateLibrary(unpackLibrary(packLibrary(library)))).map(item=>item.id),order());
+});
+
+test('legacy full-list orders migrate without pushing new boards to the end',()=>{
+  let library=emptyLibrary();for(const [id,updatedAt]of [['a',10],['b',30],['c',20]] as const)library.conversations[id]={id,title:id,updatedAt,activeIds:[]};
+  library.sidebarSort='manual';library.recentOrder=[{kind:'session',id:'a'},{kind:'session',id:'b'},{kind:'session',id:'c'}];library=migrateSidebarMoves(library);
+  assert.equal(Object.keys(library.sidebarMoves!).length,1);library.boards={fresh:{id:'fresh',title:'Fresh',kind:'group',createdAt:100,conversationIds:[]}};
+  assert.deepEqual(recentItems(library).map(item=>item.id),['a','fresh','b','c']);
+});
+
+test('manual member positions are scoped to their parent and unmoved members follow activity',()=>{
+  let library=emptyLibrary();library.sidebarSort='manual';library.sidebarMoves={};
+  for(const [id,updatedAt]of [['a',1],['b',3],['c',2]] as const)library.conversations[id]={id,title:id,updatedAt,activeIds:[]};
+  const items=['a','b','c'].map(id=>({kind:'session' as const,id}));
+  library=recordSidebarMove(library,'board:one',['session:a','session:b','session:c'],'session:a');
+  assert.deepEqual(sortedMembers(library,items,'board:one').map(item=>item.id),['a','b','c']);assert.deepEqual(sortedMembers(library,items,'board:two').map(item=>item.id),['b','c','a']);
+  library.conversations.c!.updatedAt=4;assert.deepEqual(sortedMembers(library,items,'board:one').map(item=>item.id),['a','c','b']);
+});
+
+test('metadata refresh and historical branch discovery preserve conversation activity',()=>{
+  let library=mergeSnapshot(emptyLibrary(),snap());library.conversations.sample!.updatedAt=123;const id=Object.keys(library.cards)[0]!,updatedAt=library.cards[id]!.updatedAt;
+  library=mergeSnapshot(library,{...snap(),turns:[{...snap().turns[0]!,reasoning:'补齐思考',reasoningLabel:'正在浏览网页'}]});
+  assert.equal(library.conversations.sample!.updatedAt,123);assert.equal(library.cards[id]!.updatedAt,updatedAt);
+  library=mergeSnapshot(library,{...snap(),turns:[{...snap().turns[0]!,userKey:'3',answerKey:'4',userVersion:2,question:'过去的另一条分支'}]},false);assert.equal(library.conversations.sample!.updatedAt,123);
+  library=mergeSnapshot(library,snap('新生成的回答'));assert.ok(library.conversations.sample!.updatedAt>123);
+});
+
+test('simply browsing or recollecting a native branch never promotes its activity',async()=>{
+  localStorage.clear();const {adapter,page}=fixture(),storage=new LibraryStorage('activity-browse'),seed=mergeSnapshot(emptyLibrary(),adapter.read());seed.conversations[cid]!.updatedAt=123;await storage.save(seed);
+  const store=new CanvasStore(adapter,storage);await store.start();store.setOpen(true);await store.refreshBoard();assert.equal(store.get().library.conversations[cid]!.updatedAt,123);
+  store.setOpen(false);page.setBranch(2);await new Promise(resolve=>setTimeout(resolve,150));assert.equal(store.get().library.conversations[cid]!.updatedAt,123);await store.sync();assert.equal(store.get().library.conversations[cid]!.updatedAt,123);store.dispose();
+});
+
+test('the native new-chat button exits a whiteboard to the empty home composer',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();store.setOpen(true);await store.refreshBoard();const board=store.get().canvasId,cards=Object.keys(store.get().library.cards);
+  const container=document.createElement('div');container.dataset.suedama='test-ui';document.body.append(container);const root=createRoot(container);flushSync(()=>root.render(createElement(NativeBoardList,{store,state:store.get()})));await new Promise(resolve=>setTimeout(resolve,20));
+  try{document.querySelector<HTMLElement>('._5a8ac7a')!.click();await new Promise(resolve=>setTimeout(resolve,30));assert.equal(store.get().open,false);assert.equal(adapter.read().conversationId,'');assert.deepEqual(adapter.read().turns,[]);assert.equal(document.querySelector('textarea')!.value,'');assert.deepEqual(Object.keys(store.get().library.cards),cards);assert.ok(store.get().library.boards![board]);}
+  finally{flushSync(()=>root.unmount());container.remove();store.dispose();}
+});
+
+test('new whiteboard cards center once per submission at the live canvas scale',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();store.setOpen(true);await store.refreshBoard();
+  const view={x:-310,y:175,zoom:.43};store.viewport(view,false);const stopView=store.onViewport(false,()=>({...view,zoom:.67})),requests:{position:{x:number;y:number};size:{x:number;y:number};options:{zoom?:number;center?:boolean;fit?:boolean}}[]=[];
+  const stopFocus=store.onFocus((position,size,options)=>requests.push({position,size,options}));
+  const leaf=store.get().library.conversations[cid]!.activeIds.at(-1)!;store.select(leaf);store.setDraft({text:'继续并聚焦新卡片'});await store.send();await new Promise(resolve=>setTimeout(resolve,25));assert.equal(requests.length,1);assert.deepEqual(requests[0]!.options,{zoom:.67,center:true});
+  const card=store.get().library.cards[store.get().library.selectedId!]!;assert.deepEqual(requests[0]!.position,card.position);assert.deepEqual(store.savedViewport(false),view);
+  store.clearSelection(true);store.setDraft({text:'新根并聚焦'});await store.send();await new Promise(resolve=>setTimeout(resolve,25));assert.equal(requests.length,2);assert.equal(requests[1]!.options.zoom,.67);
+  const centered=cardViewport({width:1000,height:720},card.position,{x:card.width,y:card.height},.67,false,true);assert.equal(centered.zoom,.67);assert.equal(centered.y+(card.position.y+card.height/2)*.67,360);
+  stopFocus();stopView();store.dispose();
+});
+
+test('selected Markdown notes join consecutive turns and explain gaps, forks and independent chats',()=>{
+  const turns=[0,1,2].map(index=>({userKey:String(index*2+1),answerKey:String(index*2+2),question:`问题${index+1}`,answer:`回答${index+1}\n\n\`\`\`ts\nconst value = ${index};\n\`\`\``,userVersion:1,answerVersion:1}));
+  let library=mergeSnapshot(emptyLibrary(),{conversationId:'notes',title:'笔记',busy:false,turns}),ids=library.conversations.notes!.activeIds;
+  const consecutive=selectedNotes(library,[ids[2]!,ids[0]!,ids[1]!,ids[0]!]);assert.ok(consecutive.indexOf('问题1')<consecutive.indexOf('问题2'));assert.ok(consecutive.indexOf('问题2')<consecutive.indexOf('问题3'));assert.equal(consecutive.includes('<!-- //'),false);assert.equal(consecutive.match(/## 用户提问/g)!.length,3);assert.ok(consecutive.includes('```ts\nconst value = 1;\n```'));
+  const gap=selectedNotes(library,[ids[0]!,ids[2]!]);assert.ok(gap.includes('中间略过 1 轮未选对话'));assert.equal(gap.includes('问题2'),false);
+  library=mergeSnapshot(library,{conversationId:'notes',title:'笔记',busy:false,turns:[turns[0]!,{...turns[1]!,userKey:'7',answerKey:'8',userVersion:2,question:'另一分支'}]});library=mergeSnapshot(library,{...snap(),conversationId:'other'});
+  const split=selectedNotes(library,[ids[1]!,'notes:answer:8','other:answer:2']);assert.ok(split.includes('同一会话的另一条分支'));assert.ok(split.includes('另一段独立会话'));assert.equal(selectedNotes(library,['pending:unknown']),'');
+});
+
+test('selected notes export visible prompts and immutable references without hidden instruction envelopes',()=>{
+  const source=mergeSnapshot(emptyLibrary(),snap('引用内容')),card=Object.values(source.cards)[0]!,quote=makeQuote(card,'assistant','引用内容');
+  card.question=composePrompt({text:'真正的问题',mode:'continue',quotes:[quote]},'隐藏的指令');card.annotations=[quote];
+  const notes=selectedNotes(source,[card.id]);assert.ok(notes.includes('真正的问题'));assert.ok(notes.includes('> 引用内容'));assert.equal(notes.includes('隐藏的指令'),false);assert.equal(notes.includes('<user_message>'),false);
+});
+
+test('the local-data notes action downloads only selected turns and disables for an empty selection',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();const ids=store.get().library.conversations[cid]!.activeIds;
+  store.selectMany([ids[0]!,ids[2]!]);const container=document.createElement('div');document.body.append(container);const root=createRoot(container);
+  const objectURL=URL.createObjectURL,anchorClick=win.HTMLAnchorElement.prototype.click,blobs:Blob[]=[];let filename='';
+  URL.createObjectURL=blob=>{blobs.push(blob as Blob);return 'blob:notes-test';};win.HTMLAnchorElement.prototype.click=function(){filename=this.download;};
+  try{
+    flushSync(()=>root.render(createElement(SettingsPanel,{store,state:store.get(),onClose:()=>{}})));flushSync(()=>[...container.querySelectorAll('button')].find(button=>button.textContent==='本地数据')!.click());
+    const exportButton=[...container.querySelectorAll('button')].find(button=>button.textContent==='导出笔记')!;assert.equal(exportButton.disabled,false);flushSync(()=>exportButton.click());assert.equal(filename,'suedama-notes.md');assert.equal(blobs.length,1);
+    const text=await blobs[0]!.text();assert.ok(text.includes('中间略过 1 轮未选对话'));assert.equal(text.includes('假阳性会带来什么误判'),false);
+    store.clearSelection(true);flushSync(()=>root.render(createElement(SettingsPanel,{store,state:store.get(),onClose:()=>{}})));assert.equal([...container.querySelectorAll('button')].find(button=>button.textContent==='导出笔记')!.disabled,true);
+  }finally{URL.createObjectURL=objectURL;win.HTMLAnchorElement.prototype.click=anchorClick;flushSync(()=>root.unmount());container.remove();store.dispose();}
+});
+
+test('reasoning drawer titles remove repeated native animation labels for new and saved cards',()=>{
+  const {adapter}=fixture();document.querySelector('._5255ff8')!.textContent='正在浏览网页正在浏览网页';assert.equal(adapter.read().turns[0]!.reasoningLabel,'正在浏览网页');
+  assert.equal(reasoningTitle('Browsing the web Browsing the web'),'Browsing the web');assert.equal(reasoningTitle('已思考（用时 2 秒）'),'已思考（用时 2 秒）');
+  const card=Object.values(mergeSnapshot(emptyLibrary(),snap()).cards)[0]!;card.reasoning='思考正文';card.reasoningLabel='正在浏览网页正在浏览网页';const container=document.createElement('div');document.body.append(container);const root=createRoot(container);
+  try{flushSync(()=>root.render(createElement(CardBody,{card,onQuote:()=>{}})));assert.equal(container.querySelector('summary')!.textContent,'正在浏览网页');}finally{flushSync(()=>root.unmount());container.remove();}
+});
+
+test('backup merge preserves aliases, folders, local ownership and imported new sessions',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter,new LibraryStorage('backup-merge'));await store.start();
+  const localBoard=store.get().canvasId;
+  let imported=mergeSnapshot(emptyLibrary(),{...snap(),conversationId:'imported-session'});
+  const pending={...snap(''),conversationId:'imported-session'};delete pending.turns[0]!.answerKey;
+  imported=mergeSnapshot(mergeSnapshot(emptyLibrary(),pending),{...snap(),conversationId:'imported-session'});
+  imported.conversations[cid]=structuredClone(store.get().library.conversations[cid]!);imported.cards={...imported.cards,...store.get().library.cards};
+  imported.boards={restored:{id:'restored',title:'备份白板',kind:'group',conversationIds:[cid,'imported-session']}};
+  imported.folders={restoredFolder:{id:'restoredFolder',title:'备份文件夹',items:[{kind:'board',id:'restored'}],createdAt:1,order:0}};
+  await store.importBackup(JSON.stringify(packLibrary(imported)));
+  const library=store.get().library;assert.deepEqual(library.boards!.restored!.conversationIds,['imported-session']);assert.ok(library.boards![localBoard]!.conversationIds.includes(cid));assert.ok(library.folders!.restoredFolder);assert.equal(library.cardAliases!['imported-session:user:1'],'imported-session:answer:2');assert.equal(store.get().savingError,'');
+  validateLibrary(library);assert.ok((await new LibraryStorage('backup-merge').load()).folders!.restoredFolder);store.dispose();
+});
+
+test('a failed backup write reports failure and a later successful save clears the error',async()=>{
+  localStorage.clear();const {adapter}=fixture();
+  class FailingStorage extends LibraryStorage{
+    fail=false;
+    override save(library:Parameters<LibraryStorage['save']>[0]){return this.fail?Promise.reject(new Error('模拟存储配额不足')):super.save(library);}
+  }
+  const storage=new FailingStorage('failed-import'),store=new CanvasStore(adapter,storage);await store.start();await store.flush();storage.fail=true;
+  await assert.rejects(()=>store.importBackup(JSON.stringify(store.get().library)),/本地保存失败/);assert.notEqual(store.get().notice,'已合并导入备份。');assert.match(store.get().savingError,/配额不足/);
+  storage.fail=false;assert.equal(await store.flush(),true);assert.equal(store.get().savingError,'');store.dispose();
+});
+
+test('imported folder placements do not displace existing local folder membership',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();const folder=store.newFolder();store.moveSidebarItem({kind:'session',id:cid},folder);
+  const imported=structuredClone(store.get().library);imported.folders={old:{...imported.folders![folder]!,id:'old',title:'旧位置'}};
+  await store.importBackup(JSON.stringify(imported));assert.deepEqual(store.get().library.folders![folder]!.items,[{kind:'session',id:cid}]);assert.deepEqual(store.get().library.folders!.old!.items,[]);store.dispose();
+});
+
+test('promotions remap resumed submission sources and reject malformed alias entries',()=>{
+  const pending=snap('');delete pending.turns[0]!.answerKey;let library=mergeSnapshot(emptyLibrary(),pending);const id=Object.keys(library.cards)[0]!;
+  library.boards={b:{id:'b',title:'B',conversationIds:['sample']}};
+  library.resume={id:'pending',boardId:'b',baseId:id,conversationId:'sample',wire:'问题',question:'问题',quotes:[makeQuote(library.cards[id]!,'user','第一问')],position:{x:0,y:0},size:{width:500,height:400},stage:'locate',createdAt:Date.now()};
+  library=mergeSnapshot(library,snap());assert.equal(library.resume!.baseId,'sample:answer:2');assert.equal(library.resume!.quotes[0]!.sourceId,'sample:answer:2');validateLibrary(library);
+  assert.throws(()=>validateLibrary({...library,cardAliases:{[id]:{0:'x'}}}),/替换关系无效/);assert.throws(()=>validateLibrary({...library,cardAliases:{[id]:''}}),/替换关系无效/);
+});
+
+test('a clean browser canvas collects historical branches automatically and persists them',async()=>{
+  localStorage.clear();const {adapter,page}=fixture(),store=new CanvasStore(adapter,new LibraryStorage('fresh-branches'));await store.start();assert.equal(Object.keys(store.get().library.cards).length,3);
+  store.setOpen(true);await store.refreshBoard();assert.equal(Object.keys(store.get().library.cards).length,4);assert.equal(page.getBranch(),1);assert.equal(store.get().syncing,false);
+  await store.flush();assert.equal(Object.keys((await new LibraryStorage('fresh-branches').load()).cards).length,4);store.dispose();
+});
+
+test('a long linear native history is collected once without seeking every turn again',async()=>{
+  document.body.replaceChildren();installFixture(document,false,120);const adapter=new DeepSeekAdapter(document,()=>win.location.href),scan=adapter.scanCurrent.bind(adapter);let scans=0;
+  adapter.scanCurrent=async()=>{scans++;return scan();};const result=await adapter.scanBranches(()=>{});assert.deepEqual(result,{branches:1,turns:120});assert.equal(scans,1);
+});
+
+test('cancelling a board refresh always clears syncing and allows manual recollection',async()=>{
+  localStorage.clear();const {adapter}=fixture();let release!:()=>void,entered!:()=>void;const started=new Promise<void>(resolve=>entered=resolve);
+  adapter.scanBranches=async capture=>{entered();await new Promise<void>(resolve=>release=resolve);capture(adapter.read());return {branches:1,turns:3};};
+  const store=new CanvasStore(adapter);await store.start();store.setOpen(true);await started;
+  const board=store.newBoard();release();await store.refreshBoard();assert.equal(store.get().canvasId,board);assert.equal(store.get().syncing,false);store.dispose();
 });
 test('scanner collects the current route through a virtualized native list and restores scroll',async()=>{
   const {adapter}=fixture();
@@ -367,6 +635,21 @@ test('official ordered and nested lists, emphasis, tables, code and math survive
   roundtrip.innerHTML=marked.parse(readMarkdown(root),{async:false}) as string;assert.equal(roundtrip.querySelector('ol')?.getAttribute('start'),'3');assert.equal(roundtrip.querySelectorAll('ol>li').length,2);assert.equal(roundtrip.querySelectorAll('table tr').length,2);assert.equal(roundtrip.querySelector('pre code')?.textContent,'const a = 1;\n  a++;\n');
 });
 
+test('inline and display formulas retain Chinese text without filling extension error logs',async(context)=>{
+  const {renderMessage}=await import('../src/Message'),warnings:string[]=[];context.mock.method(console,'warn',(...args:unknown[])=>warnings.push(args.join(' ')));
+  const root=document.createElement('div');root.innerHTML=renderMessage('每周费用：$周、费 = 7$\n\n$$\n周、费 = 7 \\times 2\n$$');
+  assert.equal(root.querySelectorAll('math').length,2);assert.equal(root.querySelectorAll('.katex-error').length,0);
+  assert.deepEqual([...root.querySelectorAll('annotation')].map(el=>el.textContent),['周、费 = 7','周、费 = 7 \\times 2']);
+  assert.ok(root.querySelector('math[display="block"]'));assert.deepEqual(warnings,[]);
+});
+
+test('math compatibility policy retains other warnings, syntax error fallback and untrusted-input protection',async(context)=>{
+  const {renderMessage}=await import('../src/Message'),warnings:string[]=[];context.mock.method(console,'warn',(...args:unknown[])=>warnings.push(args.join(' ')));
+  renderMessage('$$\nx\\\\y\n$$');assert.ok(warnings.some(warning=>warning.includes('[newLineInDisplayMode]')));
+  const root=document.createElement('div');root.innerHTML=renderMessage('$\\frac{1}{$');assert.ok(root.querySelector('.katex-error'));assert.ok(root.textContent!.includes('\\frac{1}{'));
+  root.innerHTML=renderMessage('$\\href{javascript:alert(1)}{周费}$');assert.equal(root.querySelector('a[href^="javascript:"],script,iframe,img'),null);
+});
+
 test('native thinking is collected separately and remains a selectable reference source',()=>{
   const {adapter}=fixture();const turn=adapter.read().turns[0]!;assert.match(turn.reasoning!,/我们需要回答中文/);assert.ok(!turn.answer.includes('我们需要回答中文'));assert.equal(turn.reasoningLabel,'已思考（用时 2 秒）');
   const library=mergeSnapshot(emptyLibrary(),adapter.read()),card=Object.values(library.cards)[0]!,quote=makeQuote(card,'reasoning','我们需要回答中文');assert.equal(quote.role,'reasoning');validateLibrary({...library,drafts:{[card.id]:{text:'说明',mode:'continue',quotes:[quote]}}});assert.ok(composePrompt({text:'解释',mode:'continue',quotes:[quote]}).includes('type="reasoning"'));
@@ -413,7 +696,7 @@ test('structured reference wire preserves multiline excerpts and separates the u
 });
 
 test('entering a canvas refreshes its loaded native route once without repeating on state updates',async()=>{
-  localStorage.clear();const {adapter}=fixture();let scans=0;adapter.scanCurrent=async()=>{scans++;return adapter.read();};
+  localStorage.clear();const {adapter}=fixture();let scans=0;adapter.scanBranches=async capture=>{scans++;const snapshot=adapter.read();capture(snapshot);return {branches:1,turns:snapshot.turns.length};};
   const store=new CanvasStore(adapter);await store.start();store.setOpen(true);await new Promise(r=>setTimeout(r,10));assert.equal(scans,1);
   store.setOpen(true);store.setDraft({text:'保留草稿'});assert.equal(scans,1);store.setOpen(false);store.setOpen(true);await new Promise(r=>setTimeout(r,10));assert.equal(scans,2);assert.equal(store.draft().text,'保留草稿');store.dispose();
 });
@@ -443,7 +726,7 @@ test('native member deletion waits for the human confirmation and distinguishes 
 
 test('switching folders during refresh serializes native navigation and collects only the latest folder',async()=>{
   localStorage.clear();const {adapter}=fixture();let release:()=>void=()=>{},scans=0,active=0,max=0;
-  adapter.scanCurrent=async()=>{scans++;active++;max=Math.max(max,active);if(scans===1)await new Promise<void>(r=>release=r);active--;return adapter.read();};
+  adapter.scanBranches=async capture=>{scans++;active++;max=Math.max(max,active);if(scans===1)await new Promise<void>(r=>release=r);active--;const snapshot=adapter.read();capture(snapshot);return {branches:1,turns:snapshot.turns.length};};
   const store=new CanvasStore(adapter);await store.start();store.setOpen(true);await new Promise(r=>setTimeout(r,5));const board=store.newBoard();store.moveSession(cid,board);store.openBoard(board);release();await new Promise(r=>setTimeout(r,15));assert.equal(max,1);assert.equal(store.get().canvasId,board);assert.equal(store.get().syncing,false);assert.equal(scans,2);store.dispose();
 });
 
@@ -503,6 +786,7 @@ test('a stale tab cannot resurrect a promoted loading card or regress its canoni
 test('session placement reorders group members and detaches directly into ordinary order',async()=>{
   localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();
   const group=store.newBoard();for(const id of ['order-a','order-b','order-c'])store.moveSession(id,group,id);
+  for(const [id,updatedAt]of [['order-a',3],['order-b',2],['order-c',1]] as const)store.get().library.conversations[id]!.updatedAt=updatedAt;
   store.moveSession('order-c',group,undefined,{before:'order-a'});assert.deepEqual(store.get().library.boards![group]!.conversationIds,['order-c','order-a','order-b']);
   store.moveSession('order-c',undefined,undefined,{before:'outside',order:['outside']});assert.deepEqual(store.get().library.sessionOrder,['order-c','outside']);assert.ok(!store.get().library.boards![group]!.conversationIds.includes('order-c'));
   store.moveSession('outside',undefined,'outside',{before:'order-c',order:['order-c','outside']});assert.deepEqual(store.get().library.sessionOrder,['outside','order-c']);validateLibrary(store.get().library);store.dispose();
@@ -622,8 +906,8 @@ test('continuations and new roots never request focus or change the saved canvas
 
 test('quote navigation preserves live scale even across canvases and only explicit focus requests fit',async()=>{
   localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();const card=Object.values(store.get().library.cards)[0]!,quote=makeQuote(card,'assistant',card.answer),requests:{fit?:boolean;zoom?:number}[]=[];
-  store.viewport({x:0,y:0,zoom:.8},false);const stopFocus=store.onFocus((_p,_s,options)=>requests.push(options)),stopView=store.onViewport(false,()=>({x:120,y:-40,zoom:.43}));store.jumpReference([quote]);await new Promise(r=>setTimeout(r,25));assert.deepEqual(requests.pop(),{zoom:.43});stopView();
-  store.newBoard();const stopOther=store.onViewport(false,()=>({x:0,y:0,zoom:.67}));store.jumpReference([quote]);assert.equal(store.savedViewport(false)!.zoom,.67,'seed the destination before its canvas mounts');await new Promise(r=>setTimeout(r,25));assert.deepEqual(requests.pop(),{zoom:.67});store.focus(card.position,{x:card.width,y:card.height},{fit:true});assert.deepEqual(requests.pop(),{fit:true});stopOther();stopFocus();store.dispose();
+  store.viewport({x:0,y:0,zoom:.8},false);const stopFocus=store.onFocus((_p,_s,options)=>requests.push(options)),stopView=store.onViewport(false,()=>({x:120,y:-40,zoom:.43}));store.jumpReference([quote]);await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));assert.deepEqual(requests.pop(),{zoom:.43});stopView();
+  store.newBoard();const stopOther=store.onViewport(false,()=>({x:0,y:0,zoom:.67}));store.jumpReference([quote]);assert.equal(store.savedViewport(false)!.zoom,.67,'seed the destination before its canvas mounts');await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));assert.deepEqual(requests.pop(),{zoom:.67});store.focus(card.position,{x:card.width,y:card.height},{fit:true});assert.deepEqual(requests.pop(),{fit:true});stopOther();stopFocus();store.dispose();
 });
 
 test('organizing folders contain boards and independent sessions without merging their histories',async()=>{
@@ -635,7 +919,7 @@ test('organizing folders contain boards and independent sessions without merging
 });
 
 test('deleting only an organizing folder releases its contents and preserves board members and geometry',async()=>{
-  localStorage.clear();const {adapter}=fixture(),deleted:string[]=[];adapter.deleteConversation=async id=>{deleted.push(id);};const store=new CanvasStore(adapter);await store.start();store.moveSessionToNewBoard(cid);const board=store.get().canvasId,folder=store.newFolder(),cards=structuredClone(store.get().library.cards);store.moveSidebarItem({kind:'board',id:board},folder);store.moveSidebarItem({kind:'session',id:'other'},folder,undefined,'独立会话');await store.deleteFolder(folder);
+  localStorage.clear();const {adapter}=fixture(),deleted:string[]=[];adapter.deleteConversation=async id=>{deleted.push(id);};const store=new CanvasStore(adapter);await store.start();store.moveSessionToNewBoard(cid);await store.refreshBoard();const board=store.get().canvasId,folder=store.newFolder(),cards=structuredClone(store.get().library.cards);store.moveSidebarItem({kind:'board',id:board},folder);store.moveSidebarItem({kind:'session',id:'other'},folder,undefined,'独立会话');await store.deleteFolder(folder);
   assert.deepEqual(deleted,[]);assert.equal(store.get().library.folders![folder],undefined);assert.deepEqual(store.get().library.cards,cards);assert.deepEqual(store.get().library.boards![board]!.conversationIds,[cid]);assert.equal(Object.values(store.get().library.boards!).find(b=>b.conversationIds.includes('other'))!.kind,'standalone');validateLibrary(store.get().library);store.dispose();
 });
 
@@ -747,6 +1031,7 @@ test('boards and ordinary sessions share a persistent sibling order without chan
   const folder=store.newFolder();store.moveSidebarItem({kind:'board',id:b},folder);assert.equal(ids().includes(b),false);assert.deepEqual(store.get().library.folders![folder]!.items,[{kind:'board',id:b}]);const restored=validateLibrary(unpackLibrary(packLibrary(store.get().library)));assert.deepEqual(restored.recentOrder,store.get().library.recentOrder);assert.deepEqual(recentItems(restored,[cid,'other']).map(i=>i.id),ids());store.dispose();
 });
 
+
 test('board prompt settings survive local storage and reject malformed imported values',async()=>{
   localStorage.clear();const {adapter}=fixture(),storage=new LibraryStorage('prompt-settings'),store=new CanvasStore(adapter,storage);await store.start();const board=store.get().canvasId;store.promptSettings({customPrompt:'先给例子',promptPreamble:DEFAULT_PREAMBLE});await store.flush();store.dispose();const restored=new CanvasStore(adapter,new LibraryStorage('prompt-settings'));await restored.start();assert.equal(restored.get().library.boards![board]!.customPrompt,'先给例子');const bad=structuredClone(restored.get().library);(bad.boards![board] as unknown as {customPrompt:number}).customPrompt=4;assert.throws(()=>validateLibrary(bad),/提示词/);restored.dispose();
 });
@@ -816,8 +1101,8 @@ test('native sidebar visibility reads the latest store even before React commits
   try{
     const link=document.querySelector<HTMLAnchorElement>('.fixture-session-list a')!;
     for(let i=0;i<4;i++){store.toggleSidebarSection('recent');await new Promise(r=>setTimeout(r,5));assert.equal(document.documentElement.dataset.suedamaRecent,i%2?'expanded':'collapsed');assert.equal(link.style.display,i%2?'':'none');}
-    const board=store.newBoard();store.moveSession(cid,board);await new Promise(r=>setTimeout(r,10));assert.equal(link.style.display,'none');
-    store.moveSession(cid);await new Promise(r=>setTimeout(r,10));assert.equal(link.style.display,'');
+    const board=store.newBoard();store.moveSession(cid,board);await store.refreshBoard();await new Promise(r=>setTimeout(r,10));assert.equal(document.querySelector<HTMLAnchorElement>('.fixture-session-list a')!.style.display,'none');
+    store.moveSession(cid);await new Promise(r=>setTimeout(r,10));assert.equal(document.querySelector<HTMLAnchorElement>('.fixture-session-list a')!.style.display,'');
   }finally{flushSync(()=>root.unmount());container.remove();store.dispose();}
 });
 
@@ -1024,4 +1309,122 @@ test('native chrome observers skip streaming text but retain images, modals and 
     document.querySelector('aside')!.classList.add('collapsed');assert.ok(observer.takeRecords().some(isChromeMutation));
     document.querySelector('[data-suedama]')!.textContent='owned';assert.ok(observer.takeRecords().every(r=>!isChromeMutation(r)));
   }finally{observer.disconnect();document.body.replaceChildren();}
+});
+
+
+test('structured history collects hidden branches without DOM scans or changing the native route',async()=>{
+  localStorage.clear();const {adapter,page}=fixture();const native=page.getBranch();let scans=0,reads=0;
+  adapter.scanCurrent=async()=>{scans++;throw new Error('DOM scan should not run');};
+  adapter.history=async()=>{reads++;return fixtureHistory(cid,page.versions,page.getBranch());};
+  const store=new CanvasStore(adapter);await store.start();store.setOpen(true);await store.refreshBoard();
+  assert.ok(reads>0);assert.equal(scans,0);assert.equal(Object.keys(store.get().library.cards).length,4);assert.equal(page.getBranch(),native);assert.equal(store.get().syncing,false);
+  await store.sync();assert.equal(scans,0);assert.ok(store.get().notice.includes('2 条分支'));validateLibrary(store.get().library);store.dispose();
+});
+test('a mounted native target returns immediately without scanning the conversation',async()=>{
+  const {adapter}=fixture(),target=adapter.read().turns[0]!;let scans=0;
+  adapter.scanCurrent=async()=>{scans++;throw new Error('unnecessary scan');};await adapter.reveal(cid,[target]);assert.equal(scans,0);
+});
+test('returning native cancels collection and hands off the whiteboard only after positioning',async()=>{
+  localStorage.clear();const {adapter}=fixture();let entered=false,aborted=false;
+  adapter.history=async(_id,_force,signal)=>{entered=true;return new Promise(resolve=>{if(signal?.aborted){aborted=true;resolve(undefined);}else signal?.addEventListener('abort',()=>{aborted=true;resolve(undefined);},{once:true});});};
+  const store=new CanvasStore(adapter);await store.start();store.setOpen(true);await new Promise(resolve=>setTimeout(resolve,5));assert.ok(entered);
+  const navigation=store.returnNative();assert.equal(store.get().open,true);assert.equal(store.get().nativeNavigating,true);await navigation;assert.equal(store.get().open,false);
+  assert.ok(aborted);assert.equal(store.get().nativeNavigating,false);store.dispose();
+});
+test('only the latest queued native navigation runs and returning to a board cancels a pending target',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();const ids=Object.keys(store.get().library.cards),revealed:string[]=[];
+  adapter.reveal=async(_cid,route)=>{revealed.push(route.at(-1)!.answerKey!);};
+  const first=store.locate(ids[0]!),second=store.locate(ids[1]!);await Promise.all([first,second]);assert.deepEqual(revealed,[store.get().library.cards[ids[1]!]!.route.at(-1)!.answerKey]);
+  revealed.length=0;const pending=store.locate(ids[0]!);store.setOpen(true);await pending;assert.equal(revealed.length,0);store.dispose();
+});
+test('preload strategy survives local save and backup validation',async()=>{
+  localStorage.clear();const {adapter}=fixture(),storage=new LibraryStorage('preload-regression'),store=new CanvasStore(adapter,storage);await store.start();store.setPreload('demand');await store.flush();assert.equal((await storage.load()).preload,'demand');validateLibrary(store.get().library);store.dispose();
+});
+
+test('switching a version in a mounted prefix locates the target without a full DOM scan',async()=>{
+  const {adapter,page}=fixture(),library=mergeSnapshot(emptyLibrary(),adapter.read()),target=Object.values(library.cards).at(-1)!;
+  page.setBranch(2);let scans=0;adapter.scanCurrent=async()=>{scans++;throw new Error('full scan is unnecessary');};
+  await adapter.reveal(cid,target.route);assert.equal(page.getBranch(),1);assert.equal(scans,0);
+});
+
+test('preload modes target the selected conversation or all board members without switching the native page',async()=>{
+  localStorage.clear();const {page,adapter}=fixture();page.sessions['other-session']={title:'其他会话',versions:[[{u:'101',a:'102',q:'其他问题',aText:'其他回答'}]],branch:1};page.render();const reads:string[]=[];
+  adapter.history=async id=>{reads.push(id);const session=page.sessions[id]!;return fixtureHistory(id,session.versions,session.branch);};
+  adapter.scanCurrent=async()=>{throw new Error('no DOM scan expected');};
+  const store=new CanvasStore(adapter);await store.start();store.moveSessionToNewBoard(cid);const board=store.get().canvasId;store.moveSession('other-session',board);await store.refreshBoard();
+  assert.ok(reads.includes('other-session'));assert.ok(store.get().library.cards['other-session:answer:102']);assert.equal(page.current,cid);
+  store.select(Object.values(store.get().library.cards).find(c=>c.conversationId===cid)!.id);store.setPreload('demand');await store.refreshBoard();reads.length=0;await store.refreshBoard();assert.deepEqual(reads,[cid]);
+  store.select('other-session:answer:102');await store.refreshBoard();assert.ok(reads.includes('other-session'));assert.equal(page.current,cid);reads.length=0;await store.sync();assert.deepEqual(reads,['other-session']);assert.equal(page.current,cid);store.dispose();
+});
+
+test('native session switching while syncing follows the new session board before opening canvas',async()=>{
+  localStorage.clear();const {adapter,page}=fixture(),store=new CanvasStore(adapter);await store.start();const a=store.get().canvasId;
+  page.sessions['native-b']={title:'会话 B',branch:1,versions:[[{u:'101',a:'102',q:'B 的问题',aText:'B 的回答'}]]};page.render();
+  await store.openNativeSession('native-b');assert.equal(store.get().current.conversationId,'native-b');
+  store.setOpen(true);assert.notEqual(store.get().canvasId,a);assert.deepEqual(store.get().library.boards![store.get().canvasId]!.conversationIds,['native-b']);
+  assert.ok(store.get().selectedIds.every(id=>store.get().library.cards[id]!.conversationId==='native-b'));store.dispose();
+});
+
+test('a history packet arriving before the DOM callback cannot swallow A to B navigation',async()=>{
+  localStorage.clear();const {adapter,page}=fixture();let packet!:(graph:ReturnType<typeof fixtureHistory>)=>void;
+  adapter.observeHistory=fn=>{packet=fn;return()=>{};};const store=new CanvasStore(adapter);await store.start();const a=store.get().canvasId;
+  page.sessions['packet-b']={title:'历史先到的 B',branch:1,versions:[[{u:'101',a:'102',q:'B 问题',aText:'B 回答'}]]};page.render();
+  document.querySelector<HTMLAnchorElement>('a[href$="/packet-b"]')!.click();packet(fixtureHistory('packet-b',page.versions,1));
+  assert.equal(store.get().current.conversationId,cid,'only the snapshot collector changes native session identity');
+  store.setOpen(true);assert.notEqual(store.get().canvasId,a);assert.deepEqual(store.get().library.boards![store.get().canvasId]!.conversationIds,['packet-b']);
+  packet(fixtureHistory(cid,page.sessions[cid]!.versions,1));assert.equal(store.get().current.conversationId,'packet-b');assert.deepEqual(store.get().library.boards![store.get().canvasId]!.conversationIds,['packet-b']);store.dispose();
+});
+
+test('entering canvas during an empty B viewport creates B ownership and never attaches it to an unrelated empty group',async()=>{
+  localStorage.clear();const {adapter,page}=fixture(),store=new CanvasStore(adapter);await store.start();const empty=store.newBoard();await store.refreshBoard();store.setOpen(false);
+  page.sessions['loading-b']={title:'加载中的 B',branch:1,versions:[[]]};page.render();document.querySelector<HTMLAnchorElement>('a[href$="/loading-b"]')!.click();
+  store.setOpen(true);assert.notEqual(store.get().canvasId,empty);assert.deepEqual(store.get().library.boards![empty]!.conversationIds,[]);assert.deepEqual(store.get().library.boards![store.get().canvasId]!.conversationIds,['loading-b']);
+  assert.deepEqual(store.get().selectedIds,[]);store.dispose();
+});
+
+test('early B history cannot claim a deliberately empty group before its native route is reconciled',async()=>{
+  localStorage.clear();const {adapter,page}=fixture();let packet!:(graph:ReturnType<typeof fixtureHistory>)=>void;adapter.observeHistory=fn=>{packet=fn;return()=>{};};
+  const store=new CanvasStore(adapter);await store.start();const empty=store.newBoard();await store.refreshBoard();store.setOpen(false);
+  page.sessions['early-b']={title:'会话 B',branch:1,versions:[[{u:'101',a:'102',q:'B 的提问',aText:'B 的回答'}]]};page.render();document.querySelector<HTMLAnchorElement>('a[href$="/early-b"]')!.click();packet(fixtureHistory('early-b',page.versions,1));
+  assert.deepEqual(store.get().library.boards![empty]!.conversationIds,[]);store.setOpen(true);assert.notEqual(store.get().canvasId,empty);assert.deepEqual(store.get().library.boards![store.get().canvasId]!.conversationIds,['early-b']);store.dispose();
+});
+
+test('a cancelled native return cannot close a whiteboard selected by a newer action',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();store.setOpen(true);await store.refreshBoard();const card=Object.values(store.get().library.cards)[0]!;let finish!:()=>void,entered!:()=>void;
+  const started=new Promise<void>(resolve=>entered=resolve);adapter.reveal=async()=>{entered();await new Promise<void>(resolve=>finish=resolve);};
+  const navigation=store.locate(card.id);assert.equal(store.get().open,true);assert.equal(store.get().nativeNavigating,true);await started;
+  store.setDraft({text:'保留等待中的草稿'});await store.send();assert.equal(store.get().pending,undefined);assert.equal(store.draft().text,'保留等待中的草稿');
+  store.setOpen(true);finish();await navigation;assert.equal(store.get().open,true);assert.equal(store.get().nativeNavigating,false);store.dispose();
+});
+
+test('a native navigation requiring page reload leaves the persisted surface in native mode',async()=>{
+  localStorage.clear();const {adapter}=fixture(),store=new CanvasStore(adapter);await store.start();store.setOpen(true);await store.refreshBoard();const card=Object.values(store.get().library.cards)[0]!;
+  adapter.reveal=async()=>{throw new PageNavigation('会话需要重新加载');};await store.locate(card.id);assert.equal(store.get().open,false);assert.equal(store.get().nativeNavigating,false);store.dispose();
+});
+
+test('native reveal keeps positioning concealed, aligns instantly and removes concealment after completion or cancellation',async()=>{
+  const {adapter}=fixture(),snapshot=adapter.read(),route=Object.values(mergeSnapshot(emptyLibrary(),snapshot).cards)[0]!.route;
+  const target=document.querySelector<HTMLElement>('[data-virtual-list-item-key]')!,scrolls:ScrollIntoViewOptions[]=[];
+  target.scrollIntoView=options=>{assert.ok(document.querySelector('[data-suedama=native-positioning]'));scrolls.push(options as ScrollIntoViewOptions);};
+  await adapter.reveal(cid,route);assert.equal(scrolls.length,3);assert.ok(scrolls.every(s=>s.behavior==='instant'));assert.equal(document.querySelector('[data-suedama=native-positioning]'),null);
+  let cancel=false;target.scrollIntoView=()=>{cancel=true;adapter.cancelNavigation();};await assert.rejects(adapter.reveal(cid,route),{name:'AbortError'});assert.ok(cancel);assert.equal(document.querySelector('[data-suedama=native-positioning]'),null);
+});
+
+test('native identity navigation reaches an off-path turn even when its live render keys are temporary',async()=>{
+  const {page}=fixture(),seed=new DeepSeekAdapter(document,()=>win.location.href),library=mergeSnapshot(emptyLibrary(),seed.read()),card=Object.values(library.cards).at(-1)!;page.setBranch(2);let requests=0,scans=0;
+  const identities:NativeIdentity[]=page.sessions[cid]!.versions[0]!.flatMap((t,i,turns)=>[{id:t.u,renderKey:t.u==='5'?'-55':t.u,parentId:i?turns[i-1]!.a:null,role:'USER' as const},{id:t.a,renderKey:t.a==='6'?'-66':t.a,parentId:t.u,role:'ASSISTANT' as const}]);
+  const locator:NativeLocator={cancel(){},dispose(){},async reveal(target){requests++;assert.equal(target.messageId,'6');page.setBranch(1);document.querySelector('[data-virtual-list-item-key="5"]')!.setAttribute('data-virtual-list-item-key','-55');document.querySelector('[data-virtual-list-item-key="6"]')!.setAttribute('data-virtual-list-item-key','-66');return {conversationId:cid,identities};}};
+  const adapter=new DeepSeekAdapter(document,()=>win.location.href,undefined,locator);adapter.scanCurrent=async()=>{scans++;throw new Error('must not scan this route');};
+  await adapter.reveal(cid,card.route);assert.equal(requests,1);assert.equal(scans,0);assert.equal(page.getBranch(),1);assert.equal(adapter.read().turns.at(-1)!.userKey,'5');assert.equal(adapter.read().turns.at(-1)!.answerKey,'6');adapter.dispose();
+});
+
+test('unavailable native identity navigation retains the existing DOM positioning fallback',async()=>{
+  const {page}=fixture();let requests=0;const adapter=new DeepSeekAdapter(document,()=>win.location.href,undefined,{cancel(){},dispose(){},async reveal(){requests++;return undefined;}}),target=adapter.read().turns[0]!;
+  await adapter.reveal(cid,[target]);assert.equal(requests,1);assert.equal(page.getBranch(),1);adapter.dispose();
+});
+
+test('a native session change during direct positioning cannot start a fallback scan in the new session',async()=>{
+  const {page}=fixture();page.sessions['new-native']={title:'新会话',versions:[[{u:'1',a:'2',q:'相同数字身份',aText:'另一个会话的回答'}]],branch:1};page.render();let scans=0;
+  const adapter=new DeepSeekAdapter(document,()=>win.location.href,undefined,{cancel(){},dispose(){},async reveal(){document.querySelector<HTMLAnchorElement>('a[href$="/new-native"]')!.click();return undefined;}}),route=[adapter.read().turns[0]!];
+  adapter.scanCurrent=async()=>{scans++;throw new Error('wrong-session scan');};await assert.rejects(adapter.reveal(cid,route),{name:'AbortError'});assert.equal(page.current,'new-native');assert.equal(scans,0);adapter.dispose();
 });

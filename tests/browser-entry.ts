@@ -1,3 +1,5 @@
+import {fixtureHistory} from './history-fixture';
+import type {NativeLocator} from '../src/native-navigation';
 import {installFixture} from './fixture';
 import {DeepSeekAdapter} from '../src/adapter';
 import {CanvasStore} from '../src/store';
@@ -7,7 +9,10 @@ import {createElement,Profiler} from 'react';
 import {createRoot} from 'react-dom/client';
 import flowStyles from '@xyflow/react/dist/style.css';
 import styles from '../src/styles.css';
+const useHistory=new URL(location.href).searchParams.get('history')==='1'||sessionStorage.getItem('suedama.fixture.history')==='1';
+if(useHistory)sessionStorage.setItem('suedama.fixture.history','1');
 const stress=Number(new URL(location.href).searchParams.get('stress')??0);
+const useNative=new URL(location.href).searchParams.get('native')==='1'||sessionStorage.getItem('suedama.fixture.native-navigation')==='1';if(useNative)sessionStorage.setItem('suedama.fixture.native-navigation','1');
 const fixture=installFixture(document,true,Number.isFinite(stress)?stress:0);
 // Exercise the same public language signal as the official settings, without account changes.
 document.documentElement.lang=sessionStorage.getItem('suedama.fixture.language')??'zh-CN';
@@ -16,7 +21,18 @@ language.style.cssText='position:fixed;left:12px;bottom:8px;z-index:20;backgroun
 for(const [value,label]of [['zh-CN','简体中文'],['en-US','English'],['ja','日本語']] as const){const option=document.createElement('option');option.value=value;option.textContent=label;language.append(option);}
 language.value=document.documentElement.lang;language.onchange=()=>{document.documentElement.lang=language.value;sessionStorage.setItem('suedama.fixture.language',language.value);};document.body.append(language);
 // Same production adapter and UI; collect both branches to exercise the graph.
-const adapter=new DeepSeekAdapter(document);
+let nativeJumps=0;
+// Synthetic native locator for UI handoff checks; the real page bridge has separate contract tests.
+const nativeLocator:NativeLocator|undefined=useNative?{cancel(){},dispose(){},async reveal(target){
+  const session=fixture.sessions[target.conversationId],index=session?.versions.findIndex(turns=>turns.some(t=>t.a===target.messageId||t.u===target.messageId))??-1;
+  if(!session||index<0||fixture.current!==target.conversationId)return;
+  fixture.setBranch(index+1);nativeJumps++;const turns=session.versions[index]!,end=turns.findIndex(t=>t.a===target.messageId||t.u===target.messageId);
+  return {conversationId:target.conversationId,identities:turns.slice(0,end+1).flatMap((t,i)=>[{id:t.u,renderKey:t.u,parentId:i?turns[i-1]!.a:null,role:'USER' as const},{id:t.a,renderKey:t.a,parentId:t.u,role:'ASSISTANT' as const}])};
+}}:undefined;
+const adapter=new DeepSeekAdapter(document,undefined,undefined,nativeLocator);
+let historyReads=0,domScans=0;
+const nativeScan=adapter.scanCurrent.bind(adapter);adapter.scanCurrent=async(index=0)=>{domScans++;return nativeScan(index);};
+if(useHistory)adapter.history=async(id)=>{historyReads++;const session=fixture.sessions[id];return session?fixtureHistory(id,session.versions,session.branch):undefined;};
 // Native fixture IDs restart in a new tab. Give each run its own local library, retained on reload.
 const run=sessionStorage.getItem('suedama.fixture.run')??crypto.randomUUID();
 sessionStorage.setItem('suedama.fixture.run',run);
@@ -27,7 +43,7 @@ store.subscribe(()=>{const value=store.get().archiveReader;if(value)sessionStora
 await store.start();
 if(!reader&&fixture.versions.length>1)fixture.setBranch(2);
 await new Promise(resolve=>setTimeout(resolve,200));
-const host=document.createElement('div');host.id='suedama-deepseek-root';
+const host=document.createElement('div');host.id='suedama-deepseek-root';host.dataset.qaHistoryReads=String(historyReads);host.dataset.qaDomScans=String(domScans);store.subscribe(()=>{host.dataset.qaHistoryReads=String(historyReads);host.dataset.qaDomScans=String(domScans);host.dataset.qaNativeJumps=String(nativeJumps);});
 Object.assign(host.style,{position:'fixed',inset:'0',zIndex:'2147483000',pointerEvents:'none'});
 const shadow=host.attachShadow({mode:'open'});const style=document.createElement('style');style.textContent=flowStyles+'\n'+styles;
 const root=document.createElement('div');shadow.append(style,root);document.documentElement.append(host);

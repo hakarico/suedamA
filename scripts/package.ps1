@@ -4,7 +4,7 @@ $dist = Join-Path $project 'dist'
 $package = Get-Content -LiteralPath (Join-Path $project 'package.json') -Raw | ConvertFrom-Json
 $manifest = Get-Content -LiteralPath (Join-Path $dist 'manifest.json') -Raw | ConvertFrom-Json
 if ($package.version -ne $manifest.version) { throw 'Build version differs from package.json. Run pnpm run build first.' }
-foreach ($name in @('content.js', 'background.js', 'manifest.json', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'INSTALL.txt', 'licenses')) {
+foreach ($name in @('content.js', 'background.js', 'history.js', 'manifest.json', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'INSTALL.txt', 'licenses')) {
   if (-not (Test-Path -LiteralPath (Join-Path $dist $name))) { throw "Missing release file: $name" }
 }
 & node (Join-Path $PSScriptRoot 'audit-release.mjs')

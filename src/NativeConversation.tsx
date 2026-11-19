@@ -49,6 +49,7 @@ export function NativeConversation({store,state}:{store:CanvasStore;state:State}
       const input=doc.querySelector<HTMLTextAreaElement>('textarea');if(!input||doc.querySelectorAll('textarea').length!==1)return;
       const key=event as KeyboardEvent,isEnter=event.type==='keydown'&&event.target===input&&key.key==='Enter'&&!key.shiftKey&&!key.ctrlKey&&!key.metaKey&&!key.altKey&&!key.isComposing;
       const isClick=event.type==='click'&&(event.target as Element).closest('.ds-button--primary.ds-button--circle');
+      if(current.nativeNavigating&&(isEnter||isClick)){event.preventDefault();event.stopImmediatePropagation();store.notice('正在定位目标对话，请稍后发送。');return;}
       if(!isEnter&&!isClick||!input.value.trim()&&!current.current.files?.length)return;
       if(isClick&&(isClick.getAttribute('aria-disabled')==='true'||isClick.classList.contains('ds-button--disabled')))return;
       event.preventDefault();event.stopImmediatePropagation();void store.sendNative(input.value);

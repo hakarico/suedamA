@@ -1,7 +1,7 @@
 import {t,useLocale} from './i18n';
 import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import {ReactFlow,ViewportPortal,Background,Handle,Position,NodeResizer,useStore,useReactFlow,ReactFlowProvider,type Node,type NodeProps,type Viewport,type ReactFlowInstance} from '@xyflow/react';
-import {HISTORY_COLORS,SELECTED_COLORS,displayQuestion,historyLine,type Card,type Point,type Quote} from './model';
+import {HISTORY_COLORS,SELECTED_COLORS,displayQuestion,historyLine,reasoningTitle,type Card,type Point,type Quote} from './model';
 import {HistoryEdge,type HistoryFlowEdge} from './HistoryEdge';
 import {ancestry,archivedCards,previewLayout} from './topology';
 import {CanvasGestures,lassoSelection} from './canvas-gestures';
@@ -27,7 +27,7 @@ export function CardBody({card,onQuote}: {card:Card;onQuote:(q:Quote[])=>void}) 
       {!!groups.size && <div className="saved-annotations">{[...groups.values()].map((qs,i)=><AnnotationChip key={qs[0]!.id} quotes={qs} number={qs[0]!.number??i+1} onOpen={()=>onQuote(qs)}/>)}</div>}
       <article className="question" data-card={card.id} data-role="user"><Message text={displayQuestion(card)}/></article>
     </div></div>
-    {card.reasoning&&<details className="reasoning"><summary>{t(card.reasoningLabel??"思考")}</summary><article data-card={card.id} data-role="reasoning"><Message text={card.reasoning}/></article></details>}
+    {card.reasoning&&<details className="reasoning"><summary>{t(reasoningTitle(card.reasoningLabel))}</summary><article data-card={card.id} data-role="reasoning"><Message text={card.reasoning}/></article></details>}
     {card.answer?<article className="answer" data-card={card.id} data-role="assistant"><Message text={card.answer}/></article>:<div className="waiting"><Icon name="text-summary"/></div>}
   </>;
 }
@@ -113,9 +113,9 @@ function Flow({store,state,menu,quote,settings,tools}:Props){useLocale();
     const p=state.pending;if(!preview&&p&&p.boardId===canvasId&&!!p.archived===archives&&ids.has(p.baseId))result.push({id:'history:'+p.id,source:p.baseId,target:p.id,type:'history',data:{agent:false,active:false},style:{'--wl-color':HISTORY_COLORS[cards[p.baseId]!.historyColor],opacity:.62} as React.CSSProperties});
     return result;
   },[visible,cards,active,lockedPath,bookmarks,preview,state.pending,canvasId,archives]);
-  const center=useCallback((position:Point,size:Point,options:{fit?:boolean;zoom?:number}={})=>{
+  const center=useCallback((position:Point,size:Point,options:{fit?:boolean;zoom?:number;center?:boolean}={})=>{
     const bounds=root.current?.getBoundingClientRect();if(!bounds)return;
-    void flow.setViewport(cardViewport(bounds,position,size,options.zoom??flow.getZoom(),options.fit),{duration:matchMedia('(prefers-reduced-motion:reduce)').matches?0:150});
+    void flow.setViewport(cardViewport(bounds,position,size,options.zoom??flow.getZoom(),options.fit,options.center),{duration:matchMedia('(prefers-reduced-motion:reduce)').matches?0:150});
   },[flow]);
   useLayoutEffect(()=>store.onViewport(preview,()=>flow.getViewport()),[store,preview,flow,canvasId]);
   useLayoutEffect(()=>store.onFocus((p,s,options)=>{if(!preview)center(p,s,options);}),[store,preview,center]);

@@ -1,14 +1,12 @@
 import {t,useLocale} from './i18n';
 import {DEFAULT_PREAMBLE,normalizePrompt,openingGuidance} from './prompt';
 import {packLibrary} from './storage-codec';
+import {selectedNotes} from './notes';
 import {ArchivePanel} from './ArchivePanel';
 import {boardAppearance} from './boards';
 import {useEffect,useRef,useState} from 'react';
 import {Icon} from './Icon';
 import {CanvasStore,errorText,type State} from './store';
-import {belongsToBoard} from './boards';
-import {archivedCards} from './topology';
-import {displayQuestion,roleLabel} from './model';
 export function download(name:string,text:string,type='application/json'){
   const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
@@ -25,10 +23,12 @@ export function SettingsPanel({store,state,onClose}:{store:CanvasStore;state:Sta
       <label className="setting-row">{t("容器不透明度")}<span className="slider-field"><input aria-label={t("容器不透明度")} title={appearance.opacity+'%'} type="range" min="0" max="100" value={appearance.opacity} onChange={e=>store.appearance({opacity:Number(e.target.value)})}/><output>{appearance.opacity}%</output></span></label>
       <input ref={image} type="file" hidden accept="image/*" onChange={e=>{const file=e.target.files?.[0];if(file){if(file.size>6_000_000){store.notice(t("背景图片请控制在 6 MB 内。"));return;}const reader=new FileReader();reader.onload=()=>store.appearance({image:String(reader.result)},board?.id);reader.readAsDataURL(file);}e.target.value='';}}/>
     </div>:tab==='prompt'?<PromptSettings key={state.canvasId} store={store} state={state} onCancel={onClose}/>:tab==='archive'?<ArchivePanel store={store} library={state.library} initialCard={state.archives?state.reference?.quotes[0]?.sourceId:undefined}/>:<div className="settings-body data-actions">
-      <button title={t("重新读取官网当前分支的消息和思考，补齐虚拟列表内容；不发送问题，不自动遍历其他分支。")} disabled={state.syncing||!!state.pending&&!state.pending.error} onClick={()=>void store.sync()}><Icon name="reconnect"/>{t("重新收集当前线路")}</button>
+      <label className="setting-row">{t('历史预加载')}<select aria-label={t('历史预加载')} value={state.library.preload??'background'} onChange={e=>store.setPreload(e.target.value as 'demand'|'background')}><option value="demand">{t('按需加载')}</option><option value="background">{t('后台补齐白板会话')}</option></select></label>
+      <p>{t('已有卡片立即显示。按需模式优先读取当前目标会话；后台模式继续补齐本白板的其他会话。官网已返回的分支会直接使用。')}</p>
+      <button title={t('优先读取官网结构化历史；不可用时遍历原生分支。请先处理官网未发送的草稿和附件。')} disabled={state.syncing||!!state.pending&&!state.pending.error} onClick={()=>void store.sync()}><Icon name="reconnect"/>{t("重新收集当前会话")}</button>
       <button title={t("导出所有白板、归档、卡片内容和本地整理设置的 JSON，可通过导入备份恢复。")} onClick={()=>download('suedama-backup.json',JSON.stringify(packLibrary({...state.library,resume:undefined}),null,2))}><Icon name="download"/>{t("导出备份")}</button>
       <button onClick={()=>backup.current?.click()}><Icon name="upload"/>{t("导入备份")}</button>
-      <button title={t("将当前白板未归档卡片的提问、回答和引用导出为 Markdown，用于阅读；不包含画布布局。")} onClick={()=>{const archived=archivedCards(state.library.cards);download('suedama-notes.md',Object.values(state.library.cards).filter(c=>belongsToBoard(c,board)&&!archived.has(c.id)).map(c=>`# ${t("用户提问")}\n\n${displayQuestion(c)}\n\n# ${t("回答")}\n\n${c.answer}\n\n${c.annotations.map(q=>`## ${t("注释")} ${q.number??''} · ${t(roleLabel(q.role))}\n\n${q.text}`).join('\n\n')}`).join('\n\n---\n\n'),'text/markdown;charset=utf-8');}}><Icon name="text-summary"/>{t("导出笔记")}</button>
+      <button title={t('将选中卡片的提问、回答和引用导出为 Markdown；可多选，按历史顺序拼接。')} disabled={!state.selectedIds.some(id=>!!state.library.cards[id])} onClick={()=>download('suedama-notes.md',selectedNotes(state.library,state.selectedIds),'text/markdown;charset=utf-8')}><Icon name="download"/>{t('导出笔记')}</button>
       <input ref={backup} type="file" hidden accept=".json,application/json" onChange={async e=>{const file=e.target.files?.[0];if(file)try{if(file.size>30_000_000)throw new Error(t("备份超过 30 MB。"));await store.importBackup(await file.text());}catch(error){store.notice(errorText(error));}e.target.value='';}}/>
     </div>}
   </section></div>;

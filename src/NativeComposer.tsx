@@ -25,7 +25,7 @@ export function NativeComposer({store,state}:{store:CanvasStore;state:State}){us
     <div className="composer-footer"><div className="native-toggles">{controls.filter(c=>c.id==='thinking'||c.id==='search').map(c=><NativeButton key={c.id} control={c} onClick={()=>void store.nativeAction(c.id)}/>)}</div><span className="native-spacer"/>
       {controls.filter(c=>c.id==='attach').map(c=><NativeButton key={c.id} control={c} onClick={()=>picker.current?.click()}/>)}
       <input hidden ref={picker} type="file" multiple accept={document.querySelector<HTMLInputElement>('input[type=file]')?.accept} onChange={e=>{store.addFiles([...e.target.files??[]]);e.target.value='';}}/>
-      {send&&<NativeButton control={send} label={state.current.busy?t("停止生成"):t("发送问题")} disabled={state.current.busy?false:!draft.text.trim()&&!files.length&&!state.current.files?.length||!!pending||state.syncing||!state.ready} onClick={()=>state.current.busy?void store.nativeAction('send'):void store.send()}/>}
+      {send&&<NativeButton control={send} label={state.current.busy?t("停止生成"):t("发送问题")} disabled={state.nativeNavigating||(!state.current.busy&&(!draft.text.trim()&&!files.length&&!state.current.files?.length||!!pending||state.syncing||!state.ready))} onClick={()=>state.current.busy?void store.nativeAction('send'):void store.send()}/>}
     </div>
   </section>;
 }

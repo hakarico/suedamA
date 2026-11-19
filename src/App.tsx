@@ -11,7 +11,8 @@ import {Icon,type IconName} from './Icon';
 import {CanvasStore,errorText} from './store';
 import {NativeComposer} from './NativeComposer';
 import {OverlayPortal} from './OverlayPortal';
-import {SettingsPanel} from './SettingsPanel';
+import {SettingsPanel,download} from './SettingsPanel';
+import {selectedNotes} from './notes';
 import {NativeConversation} from './NativeConversation';
 import {NativeBoardList} from './NativeBoardList';
 import {useNativeChrome} from './use-native-chrome';
@@ -68,8 +69,8 @@ export function App({store}:{store:CanvasStore}){useLocale();
     {state.archiveReader&&<div className="archive-native-banner" style={{left:`calc(50% + ${chrome.width/2}px)`}} role="status"><span>{t("归档内容，只读中")}</span><button onClick={store.closeArchiveReader}>{t("返回归档")}</button></div>}
     {open&&<div className="canvas-scene">{appearance.image&&<div className="canvas-background" style={{backgroundImage:`url(${JSON.stringify(appearance.image)})`,filter:`brightness(${appearance.brightness}%) blur(${appearance.blur}px)`}}/>}</div>}
     {chrome.width===56&&<NavigationRail store={store}/>}
-    {(state.notice||open&&state.syncing||state.savingError)&&<div className="notice" role="status" style={{zIndex:430}}>{t(state.savingError||(open&&state.syncing?"正在收集当前线路…":state.notice))}</div>}
-    {!open&&!state.archiveReader&&!chrome.modal&&state.current.conversationId&&<div className="native-actions"><button aria-label={t("全局预览")} onClick={()=>{store.setOpen(true);if(!store.get().preview)store.togglePreview();}}><Icon name="globe"/></button><button aria-label={t("白板")} onClick={()=>{if(store.get().preview)store.togglePreview();store.setOpen(true);}}><Icon name="artboard"/></button></div>}
+    {(state.notice||state.nativeNavigating||open&&state.syncing||state.savingError)&&<div className="notice" role="status" style={{zIndex:430}}>{t(state.savingError||(state.nativeNavigating?"正在定位目标对话…":open&&state.syncing?"正在收集当前线路…":state.notice))}</div>}
+    {!open&&!state.nativeNavigating&&!state.archiveReader&&!chrome.modal&&state.current.conversationId&&<div className="native-actions"><button aria-label={t("全局预览")} onClick={()=>{store.setOpen(true);if(!store.get().preview)store.togglePreview();}}><Icon name="globe"/></button><button aria-label={t("白板")} onClick={()=>{if(store.get().preview)store.togglePreview();store.setOpen(true);}}><Icon name="artboard"/></button></div>}
     {open&&<div className="app" style={{left:chrome.width,'--surface-opacity':(appearance.opacity??100)/100} as React.CSSProperties} onPaste={e=>{if((e.target as Element).closest('input,textarea,[contenteditable=true]'))return;const files=[...e.clipboardData.files];if(files.length){e.preventDefault();store.addFiles(files);}}} onClick={e=>{const target=(e.target as Element).closest<HTMLElement>('[data-image]');if(target?.dataset.image)setImage(target.dataset.image);}} onMouseUp={selectText} onPointerDownCapture={e=>{const target=e.target as Element;if(e.button===0){frozenTarget.current=store.draftKey();if(target.closest('.react-flow')&&!target.closest('.react-flow__node,button,nav,input,textarea')){window.getSelection()?.removeAllRanges();setSelection(undefined);}}if(menu&&!target.closest('.card-menu'))setMenu(undefined);}}>
       <div className="canvas-title"><span>{board?.title??t("白板")}</span></div>
       <main className={`canvas-area ${preview?'is-preview':''}`}>
@@ -89,6 +90,7 @@ export function App({store}:{store:CanvasStore}){useLocale();
         {card&&(menu.level==='palette'?<div className="palette" aria-label={t("历史线路颜色")}>{HISTORY_COLORS.map((c,i)=><button key={c} aria-label={t("历史颜色 {0}",{"0":i+1})} aria-pressed={card.historyColor===i} style={{background:c}} onClick={()=>store.colorLine(card.id,i)}/>)}</div>:<>
           <Tool label icon="reset-size" text={t("恢复原始大小")} action={()=>{store.patchCard(card.id,{width:Math.max(280,Math.min(1100,innerWidth-160)*.75),height:Math.max(280,Math.min(1000,innerHeight-200))});setMenu(undefined);}}/>
           <Tool label icon={card.bookmarked?'bookmark-fill':'bookmark'} text={card.bookmarked?t("取消收藏"):t("收藏")} action={()=>{store.patchCard(card.id,{bookmarked:!card.bookmarked});setMenu(undefined);}}/>
+          <Tool label icon="download" text={t('导出笔记')} action={()=>{download('suedama-notes.md',selectedNotes(library,state.selectedIds.includes(card.id)?state.selectedIds:[card.id]),'text/markdown;charset=utf-8');setMenu(undefined);}}/>
           <hr/><Tool label danger icon="archive-tree" text={card.archived?t("恢复此轮及下游"):isArchived(card,library.cards)?t("先恢复归档的祖先"):t("归档此轮及下游")} disabled={isArchived(card,library.cards)&&!card.archived} action={()=>{store.archive(card.id);setMenu(undefined);}}/>
         </>)}
         {!card&&state.pending?.id===menu.id&&<><Tool label icon="archive-tree" text={state.pending.archived?t("恢复等待卡片"):t("归档等待卡片")} action={()=>{store.archivePending();setMenu(undefined);}}/><Tool label icon="eraser" text={t("移除失败卡片")} disabled={!state.pending.error} action={()=>{store.dismissPending();setMenu(undefined);}}/><Tool label icon="immersive" text={t("返回官网核对")} action={()=>store.setOpen(false)}/></>}

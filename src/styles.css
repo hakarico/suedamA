@@ -191,3 +191,5 @@ a { color:#92b5da;text-decoration:none; } a:hover {text-decoration:underline;}
 .prompt-settings{display:flex;flex-direction:column;gap:18px}.prompt-settings label{display:flex;flex-direction:column;gap:8px}.prompt-settings textarea{width:100%;resize:vertical;min-height:100px;line-height:1.6}.prompt-settings p{color:#aaa;font-size:12px;line-height:1.6;margin:0}
 .prompt-setting-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.prompt-setting-heading select{color:inherit;background:#303030;border:1px solid #ffffff25;border-radius:7px;padding:5px 8px;font:inherit}.prompt-setting-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.prompt-actions-spacer{flex:1}.prompt-setting-actions .prompt-apply{border:1px solid #ffffff35}.prompt-setting-actions .prompt-apply:disabled{opacity:.35;cursor:default;background:transparent}
 .prompt-setting-actions{position:sticky;bottom:0;z-index:1;background:#242424;padding:10px 0}
+
+.setting-row select{color:inherit;background:#303030;border:1px solid #ffffff25;border-radius:7px;padding:5px 8px;font:inherit;max-width:60%}
